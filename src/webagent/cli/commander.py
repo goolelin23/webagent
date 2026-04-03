@@ -75,6 +75,10 @@ def create_parser() -> argparse.ArgumentParser:
     # ── skills: 技能管理 ──
     subparsers.add_parser("skills", help="查看可用技能插件")
 
+    # ── openclaw: OpenClaw 兼容 ──
+    export_claw_parser = subparsers.add_parser("export-claw", help="导出知识库为 OpenClaw(龙虾) 技能包")
+    export_claw_parser.add_argument("domain", type=str, help="站点域名")
+
     return parser
 
 
@@ -115,6 +119,8 @@ class Commander:
             self._kb_command(parsed)
         elif parsed.command == "skills":
             self._skills_command()
+        elif parsed.command == "export-claw":
+            self._export_claw_command(parsed.domain)
         else:
             parser.print_help()
 
@@ -125,6 +131,7 @@ class Commander:
         console.print("  [dim]  /scan <url>     — 扫描Web系统（自动深度分析）[/dim]")
         console.print("  [dim]  /analyze <域名>  — 手动触发深度分析[/dim]")
         console.print("  [dim]  /pageskills <域名> — 查看页面技能[/dim]")
+        console.print("  [dim]  /export-claw <域名> — 导出为OpenClaw(龙虾)技能包[/dim]")
         console.print("  [dim]  /kb list        — 查看知识库[/dim]")
         console.print("  [dim]  /skills         — 查看可用技能[/dim]")
         console.print("  [dim]  /model          — 查看当前模型配置[/dim]")
@@ -181,6 +188,10 @@ class Commander:
                         if not arg:
                             arg = Prompt.ask("  请输入站点域名")
                         self._page_skills_command(arg)
+                    elif cmd == "/export-claw":
+                        if not arg:
+                            arg = Prompt.ask("  请输入站点域名")
+                        self._export_claw_command(arg)
                     elif cmd == "/plan":
                         if not arg:
                             arg = Prompt.ask("  请输入任务指令")
@@ -401,6 +412,26 @@ class Commander:
         console.print()
         console.print("  [dim]切换方法: 修改 .env 中的 LLM_PROVIDER 和对应 API Key[/dim]")
 
+    def _export_claw_command(self, domain: str):
+        """导出为 OpenClaw 技能包"""
+        try:
+            from webagent.openclaw import export_for_openclaw
+            export_dir = export_for_openclaw(domain)
+            console.print(Panel(
+                f"🦞 OpenClaw 技能包已导出到:\n\n"
+                f"  {export_dir.resolve()}\n\n"
+                f"使用方法:\n"
+                f"  1. 复制到 OpenClaw 的 skills 目录:\n"
+                f"     cp -r {export_dir.resolve()} ~/.openclaw/skills/\n\n"
+                f"  2. 重启 OpenClaw 即可使用\n\n"
+                f"  3. 或手动加载:\n"
+                f"     在 OpenClaw 设置中添加 skills 路径指向导出目录",
+                title="🦞 OpenClaw 导出完成",
+                border_style="red",
+            ))
+        except Exception as e:
+            console.print(f"  [bold red]导出失败: {e}[/bold red]")
+
     def _print_interactive_help(self):
         """打印交互模式帮助"""
         help_text = """
@@ -412,6 +443,7 @@ class Commander:
 | `/scan <url>` | 扫描Web系统（自动深度分析+技能生成） |
 | `/analyze <域名>` | 对已扫描站点手动触发深度分析 |
 | `/pageskills <域名>` | 查看自动生成的页面技能 |
+| `/export-claw <域名>` | 🦞 导出为OpenClaw(龙虾)技能包 |
 | `/plan <指令>` | 仅生成执行计划（不执行） |
 | `/kb list` | 查看所有知识库 |
 | `/kb show <domain>` | 查看特定站点知识 |
