@@ -169,7 +169,14 @@ class AgentOrchestrator:
         async with async_playwright() as p:
             # 必须使用有头模式，让用户操作
             browser = await p.chromium.launch(headless=False)
-            context = await browser.new_context(viewport={"width": 1280, "height": 800})
+            
+            # 加载已有的凭证（如果存在）
+            auth_path = self.knowledge_store.get_auth_path(domain)
+            context_kwargs = {"viewport": {"width": 1280, "height": 800}}
+            if auth_path.exists():
+                context_kwargs["storage_state"] = str(auth_path)
+                
+            context = await browser.new_context(**context_kwargs)
             page = await context.new_page()
             
             resolved_indices = []
@@ -189,6 +196,11 @@ class AgentOrchestrator:
                 if resolved:
                     resolved_indices.append(i)
                     
+            # 保存凭证
+            if resolved_indices:
+                await context.storage_state(path=str(auth_path))
+                print_success(f"已保存登录凭证/Cookie 至: {auth_path}")
+                
             await browser.close()
             
         # 清理已解决的阻碍

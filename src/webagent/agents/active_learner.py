@@ -143,7 +143,14 @@ class ActiveLearner:
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.config.browser.headless)
-            context = await browser.new_context(viewport={"width": 1280, "height": 800})
+            
+            auth_path = self.knowledge_store.get_auth_path(domain)
+            context_kwargs = {"viewport": {"width": 1280, "height": 800}}
+            if auth_path.exists():
+                context_kwargs["storage_state"] = str(auth_path)
+                print_agent("active_learner", "🔑 已加载持久化登录凭证")
+                
+            context = await browser.new_context(**context_kwargs)
             page = await context.new_page()
 
             # 初始化根节点

@@ -170,12 +170,19 @@ class ExplorerAgent:
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.config.browser.headless)
-            context = await browser.new_context(
-                viewport={
+            
+            auth_path = self.knowledge_store.get_auth_path(site.domain)
+            context_kwargs = {
+                "viewport": {
                     "width": self.config.browser.viewport_width,
                     "height": self.config.browser.viewport_height,
-                },
-            )
+                }
+            }
+            if auth_path.exists():
+                context_kwargs["storage_state"] = str(auth_path)
+                print_agent("explorer", "🔑 已加载持久化登录凭证")
+                
+            context = await browser.new_context(**context_kwargs)
             page = await context.new_page()
 
             # BFS 扫描

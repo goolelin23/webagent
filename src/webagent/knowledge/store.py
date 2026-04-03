@@ -33,6 +33,11 @@ class KnowledgeStore:
         """获取域名对应的存储文件路径"""
         return self.base_dir / self._domain_to_filename(domain)
 
+    def get_auth_path(self, domain: str) -> Path:
+        """获取域名对应的身份认证持久化文件 (Cookies/StorageState)"""
+        safe_name = domain.replace(":", "_").replace("/", "_").replace(".", "_")
+        return self.base_dir / f"{safe_name}_auth.json"
+
     def _extract_domain(self, url: str) -> str:
         """从 URL 中提取域名"""
         parsed = urlparse(url)
