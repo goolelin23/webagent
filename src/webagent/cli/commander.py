@@ -122,7 +122,9 @@ class Commander:
         """交互模式"""
         print_banner()
         console.print("  [dim]输入自然语言指令，或使用以下命令:[/dim]")
-        console.print("  [dim]  /scan <url>     — 扫描Web系统[/dim]")
+        console.print("  [dim]  /scan <url>     — 扫描Web系统（自动深度分析）[/dim]")
+        console.print("  [dim]  /analyze <域名>  — 手动触发深度分析[/dim]")
+        console.print("  [dim]  /pageskills <域名> — 查看页面技能[/dim]")
         console.print("  [dim]  /kb list        — 查看知识库[/dim]")
         console.print("  [dim]  /skills         — 查看可用技能[/dim]")
         console.print("  [dim]  /model          — 查看当前模型配置[/dim]")
@@ -171,6 +173,14 @@ class Commander:
                         console.print(f"  [cyan]目标URL已设置: {target_url}[/cyan]")
                     elif cmd == "/model":
                         self._model_command(arg)
+                    elif cmd == "/analyze":
+                        if not arg:
+                            arg = Prompt.ask("  请输入站点域名")
+                        asyncio.run(self._async_analyze(arg))
+                    elif cmd == "/pageskills":
+                        if not arg:
+                            arg = Prompt.ask("  请输入站点域名")
+                        self._page_skills_command(arg)
                     elif cmd == "/plan":
                         if not arg:
                             arg = Prompt.ask("  请输入任务指令")
@@ -300,12 +310,28 @@ class Commander:
         depth: int = 2,
         max_pages: int = 50,
     ):
-        """异步扫描"""
+        """异步扫描（含自动深度分析）"""
         orchestrator = self._get_orchestrator()
         try:
             await orchestrator.scan(url, depth, max_pages)
         except Exception as e:
             console.print(f"  [bold red]扫描失败: {e}[/bold red]")
+
+    async def _async_analyze(self, domain: str):
+        """手动触发深度分析"""
+        orchestrator = self._get_orchestrator()
+        try:
+            console.print(f"  [cyan]正在对 [{domain}] 进行深度分析...[/cyan]")
+            summary = await orchestrator.analyze(domain)
+            console.print(Panel(summary, title=f"🧠 深度分析结果 — {domain}", border_style="magenta"))
+        except Exception as e:
+            console.print(f"  [bold red]深度分析失败: {e}[/bold red]")
+
+    def _page_skills_command(self, domain: str):
+        """显示页面技能列表"""
+        orchestrator = self._get_orchestrator()
+        summary = orchestrator.get_page_skills_summary(domain)
+        console.print(Panel(summary, title=f"📦 页面技能 — {domain}", border_style="cyan"))
 
     async def _async_plan_only(self, instruction: str, target_url: str = ""):
         """仅生成执行计划"""
@@ -383,11 +409,13 @@ class Commander:
 | 命令 | 说明 |
 |------|------|
 | `<指令>` | 直接输入自然语言指令执行自动化任务 |
-| `/scan <url>` | 扫描Web系统并生成知识库 |
+| `/scan <url>` | 扫描Web系统（自动深度分析+技能生成） |
+| `/analyze <域名>` | 对已扫描站点手动触发深度分析 |
+| `/pageskills <域名>` | 查看自动生成的页面技能 |
 | `/plan <指令>` | 仅生成执行计划（不执行） |
 | `/kb list` | 查看所有知识库 |
 | `/kb show <domain>` | 查看特定站点知识 |
-| `/skills` | 查看可用技能插件 |
+| `/skills` | 查看所有可用技能插件 |
 | `/model` | 查看当前模型配置和支持的提供商 |
 | `/domain <name>` | 设置业务领域 (supply_chain/hr/ecommerce) |
 | `/url <url>` | 设置目标系统URL |

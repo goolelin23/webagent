@@ -199,3 +199,47 @@ class KnowledgeStore:
             })
 
         return context
+
+    def get_page_skills(self, domain: str) -> list:
+        """获取站点所有页面技能"""
+        from webagent.knowledge.models import DeepAnalysis
+        site = self.load(domain)
+        if not site:
+            return []
+        analysis = site.get_deep_analysis()
+        if not analysis:
+            return []
+        return analysis.get_all_skills()
+
+    def find_workflow(self, domain: str, instruction: str):
+        """基于指令文本匹配业务流程"""
+        site = self.load(domain)
+        if not site:
+            return None
+        analysis = site.get_deep_analysis()
+        if not analysis:
+            return None
+        return analysis.find_workflow(instruction)
+
+    def get_deep_context(self, domain: str) -> dict:
+        """
+        获取深度分析上下文（供规划器使用）
+
+        Returns:
+            包含技能列表、工作流、业务实体等信息的字典
+        """
+        site = self.load(domain)
+        if not site or not site.is_analyzed:
+            return {"analyzed": False}
+
+        analysis = site.get_deep_analysis()
+        return {
+            "analyzed": True,
+            "system_description": analysis.system_description,
+            "business_entities": analysis.business_entities,
+            "page_skills_prompt": analysis.get_skills_prompt(),
+            "workflows_prompt": analysis.get_workflows_prompt(),
+            "total_skills": len(analysis.get_all_skills()),
+            "total_workflows": len(analysis.get_workflows()),
+        }
+

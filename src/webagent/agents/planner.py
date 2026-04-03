@@ -59,21 +59,31 @@ class PlannerAgent:
         # 3. 获取可用技能列表
         available_skills = self.skill_manager.get_skills_prompt()
 
-        # 4. 构建规划提示词
-        task_prompt = self.prompt_engine.build_planner_task(
+        # 4. 获取深度分析上下文（页面技能 + 工作流）
+        deep_context = self._get_deep_context(target_url)
+
+        # 5. 检查是否有匹配的工作流
+        matched_wf = self._match_workflow(instruction, target_url)
+        if matched_wf:
+            print_agent("planner", f"🎯 匹配到业务流程: {matched_wf.name}")
+            print_agent("planner", f"   技能序列: {' → '.join(matched_wf.skill_sequence)}")
+
+        # 6. 构建规划提示词
+        task_prompt = self.prompt_engine.build_planner_task_with_deep_context(
             user_instruction=instruction,
             system_info=system_info,
             knowledge_context=knowledge_context,
             available_skills=available_skills,
+            deep_context=deep_context,
         )
 
         system_prompt = self.prompt_engine.get_planner_system_prompt()
 
-        # 5. 调用 LLM 生成计划
+        # 7. 调用 LLM 生成计划
         print_agent("planner", "正在分析和规划...")
         response = await self._call_llm(system_prompt, task_prompt)
 
-        # 6. 解析 LLM 返回的计划
+        # 8. 解析 LLM 返回的计划
         plan = self._parse_plan_response(response, instruction)
 
         print_agent("planner", f"生成执行计划: {len(plan.steps)} 个步骤")
@@ -251,3 +261,26 @@ class PlannerAgent:
         if site:
             return site.summary()
         return f"目标URL: {target_url}"
+
+    def _get_deep_context(self, target_url: str) -> dict | None:
+        """获取深度分析上下文"""
+        if not target_url:
+            return None
+
+        from urllib.parse import urlparse
+        domain = urlparse(target_url).netloc
+        ctx = self.knowledge_store.get_deep_context(domain)
+        if ctx.get("analyzed"):
+            print_agent("planner", f"📚 已加载深度分析: {ctx.get('total_skills', 0)} 个技能, {ctx.get('total_workflows', 0)} 个流程")
+            return ctx
+        return None
+
+    def _match_workflow(self, instruction: str, target_url: str):
+        """尝试匹配已学习的工作流"""
+        if not target_url:
+            return None
+
+        from urllib.parse import urlparse
+        domain = urlparse(target_url).netloc
+        return self.knowledge_store.find_workflow(domain, instruction)
+

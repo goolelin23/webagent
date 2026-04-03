@@ -210,6 +210,48 @@ class AgentOrchestrator:
         """获取知识库摘要"""
         return self.knowledge_store.get_site_summary(domain)
 
+    async def analyze(self, domain: str) -> str:
+        """
+        对已扫描的站点进行深度分析（手动触发）
+
+        Args:
+            domain: 站点域名
+        Returns:
+            分析摘要
+        """
+        site = self.knowledge_store.load(domain)
+        if not site:
+            return f"未找到站点: {domain}"
+
+        if not site.pages:
+            return f"站点 [{domain}] 没有扫描数据，请先执行扫描"
+
+        site = await self.explorer.deep_analyze(site)
+
+        # 注册生成的页面技能
+        self._load_page_skills(domain)
+
+        return site.summary()
+
+    def _load_page_skills(self, domain: str):
+        """从知识库加载页面技能到 SkillManager"""
+        from webagent.skills.page_skill_generator import PageSkillGenerator
+        site = self.knowledge_store.load(domain)
+        if site and site.is_analyzed:
+            generator = PageSkillGenerator(self.skill_manager)
+            count = generator.generate_and_register(site)
+            if count > 0:
+                print_agent("explorer", f"已加载 {count} 个页面技能到技能管理器")
+
+    def get_page_skills_summary(self, domain: str) -> str:
+        """获取页面技能摘要"""
+        from webagent.skills.page_skill_generator import PageSkillGenerator
+        site = self.knowledge_store.load(domain)
+        if not site:
+            return f"未找到站点: {domain}"
+        generator = PageSkillGenerator(self.skill_manager)
+        return generator.get_skills_summary(site)
+
     def list_skills(self) -> list[dict]:
         """列出所有可用技能"""
         return self.skill_manager.list_skills()

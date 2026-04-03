@@ -42,6 +42,7 @@ class ExplorerAgent:
         target_url: str,
         scan_depth: int = 2,
         max_pages: int = 50,
+        auto_analyze: bool = True,
     ) -> SiteKnowledge:
         """
         扫描整个站点
@@ -50,6 +51,7 @@ class ExplorerAgent:
             target_url: 目标URL
             scan_depth: 扫描深度
             max_pages: 最大页面数
+            auto_analyze: 扫描后自动进行深度分析
         Returns:
             SiteKnowledge 站点知识
         """
@@ -83,10 +85,34 @@ class ExplorerAgent:
                 max_pages=max_pages,
             )
 
-        # 保存知识库
+        # 保存知识库（扫描结果）
         self.knowledge_store.save(site)
         print_success(f"扫描完成! 共发现 {len(site.pages)} 个页面")
+
+        # 深度分析: LLM 分析每个页面的原子操作，生成技能和工作流
+        if auto_analyze and site.pages:
+            await self.deep_analyze(site)
+
         print_agent("explorer", f"\n{site.summary()}")
+        return site
+
+    async def deep_analyze(self, site: SiteKnowledge) -> SiteKnowledge:
+        """
+        对已扫描的站点进行深度分析（也可手动调用）
+
+        分析内容:
+        - 每个页面的原子操作 → 自动生成 PageSkillDef
+        - 跨页面的业务流程 → 自动生成 WorkflowDef
+        - 系统整体描述和业务实体识别
+        """
+        from webagent.knowledge.deep_analyzer import DeepAnalyzer
+
+        analyzer = DeepAnalyzer()
+        analysis = await analyzer.analyze(site)
+
+        # 保存深度分析结果到知识库
+        site.set_deep_analysis(analysis)
+        self.knowledge_store.save(site)
 
         return site
 

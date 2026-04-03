@@ -114,6 +114,126 @@ class PageKnowledge:
 
 
 @dataclass
+class PageSkillDef:
+    """
+    页面技能定义 — 一个页面上可执行的原子操作
+    由深度分析器自动生成
+    """
+    skill_id: str                   # "login", "create_order_form"
+    page_url: str                   # 所属页面 URL
+    name: str                       # "登录系统"
+    description: str = ""           # "输入用户名密码并提交登录"
+    skill_type: str = ""            # form_fill, navigation, search, crud_create, login, action
+    parameters: list[dict] = field(default_factory=list)  # [{"name":"username","type":"text","required":True,"selector":"#user"}]
+    steps: list[dict] = field(default_factory=list)        # 自动生成的执行步骤
+    preconditions: list[str] = field(default_factory=list)
+    postconditions: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> PageSkillDef:
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+    def get_param_names(self) -> list[str]:
+        return [p["name"] for p in self.parameters]
+
+    def get_required_params(self) -> list[dict]:
+        return [p for p in self.parameters if p.get("required")]
+
+
+@dataclass
+class WorkflowDef:
+    """
+    页面间工作流 — 多页面联动的完整业务流程
+    """
+    workflow_id: str                # "purchase_order_flow"
+    name: str                       # "创建采购订单完整流程"
+    description: str = ""
+    trigger_keywords: list[str] = field(default_factory=list)  # ["采购", "下单", "采购订单"]
+    skill_sequence: list[str] = field(default_factory=list)    # ["navigate_to_orders", "click_new", "fill_order_form"]
+    pages_involved: list[str] = field(default_factory=list)    # 涉及的页面URL
+    preconditions: list[str] = field(default_factory=list)     # ["需要已登录"]
+    expected_outcome: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> WorkflowDef:
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+    def matches_keywords(self, text: str) -> bool:
+        """检查指令是否匹配此工作流的触发关键词"""
+        text_lower = text.lower()
+        return any(kw.lower() in text_lower for kw in self.trigger_keywords)
+
+
+@dataclass
+class DeepAnalysis:
+    """深度分析结果 — 扫描后由 LLM 分析生成"""
+    page_skills: dict[str, list[dict]] = field(default_factory=dict)     # url → [PageSkillDef.to_dict()]
+    workflows: list[dict] = field(default_factory=dict)                  # [WorkflowDef.to_dict()]
+    page_relationships: dict[str, list[str]] = field(default_factory=dict)  # url → [可到达的url]
+    business_entities: list[str] = field(default_factory=list)              # ["采购订单", "供应商"]
+    system_description: str = ""   # LLM 对系统的整体总结
+    analyzed_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DeepAnalysis:
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+    def get_page_skills(self, url: str) -> list[PageSkillDef]:
+        """获取指定页面的技能列表"""
+        raw = self.page_skills.get(url, [])
+        return [PageSkillDef.from_dict(s) for s in raw]
+
+    def get_all_skills(self) -> list[PageSkillDef]:
+        """获取所有页面技能"""
+        skills = []
+        for url, skill_list in self.page_skills.items():
+            for s in skill_list:
+                skills.append(PageSkillDef.from_dict(s))
+        return skills
+
+    def get_workflows(self) -> list[WorkflowDef]:
+        """获取所有工作流"""
+        if isinstance(self.workflows, list):
+            return [WorkflowDef.from_dict(w) for w in self.workflows]
+        return []
+
+    def find_workflow(self, instruction: str) -> WorkflowDef | None:
+        """基于指令文本匹配工作流"""
+        for wf in self.get_workflows():
+            if wf.matches_keywords(instruction):
+                return wf
+        return None
+
+    def get_skills_prompt(self) -> str:
+        """生成技能列表提示词"""
+        lines = []
+        for url, skill_list in self.page_skills.items():
+            for s in skill_list:
+                skill = PageSkillDef.from_dict(s)
+                params_str = ", ".join(skill.get_param_names()) if skill.parameters else ""
+                lines.append(f"- {skill.skill_id}({params_str}) — {skill.name}: {skill.description}")
+        return "\n".join(lines) if lines else "（暂无页面技能）"
+
+    def get_workflows_prompt(self) -> str:
+        """生成工作流提示词"""
+        lines = []
+        for wf in self.get_workflows():
+            keywords = ", ".join(wf.trigger_keywords[:5])
+            steps = " → ".join(wf.skill_sequence)
+            lines.append(f"- {wf.name} [关键词: {keywords}]: {steps}")
+        return "\n".join(lines) if lines else "（暂无工作流）"
+
+
+@dataclass
 class SiteKnowledge:
     """站点整体知识"""
     domain: str
@@ -121,7 +241,8 @@ class SiteKnowledge:
     site_name: str = ""
     pages: dict[str, PageKnowledge] = field(default_factory=dict)  # url -> PageKnowledge
     sitemap: list[str] = field(default_factory=list)
-    workflows: list[dict[str, Any]] = field(default_factory=list)  # 业务流程
+    workflows: list[dict[str, Any]] = field(default_factory=list)  # 旧字段保留兼容
+    deep_analysis: dict | None = field(default=None)               # DeepAnalysis.to_dict()
     scan_depth: int = 0
     last_scan: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -139,7 +260,7 @@ class SiteKnowledge:
             for url, page_data in data.get("pages", {}).items()
         }
         d = {k: v for k, v in data.items()
-             if k in cls.__dataclass_fields__ and k != "pages"}
+             if k in cls.__dataclass_fields__ and k not in ("pages",)}
         return cls(pages=pages, **d)
 
     @classmethod
@@ -164,20 +285,49 @@ class SiteKnowledge:
                 forms.append((url, form))
         return forms
 
+    def get_deep_analysis(self) -> DeepAnalysis | None:
+        """获取深度分析结果"""
+        if self.deep_analysis:
+            return DeepAnalysis.from_dict(self.deep_analysis)
+        return None
+
+    def set_deep_analysis(self, analysis: DeepAnalysis):
+        """设置深度分析结果"""
+        self.deep_analysis = analysis.to_dict()
+
+    @property
+    def is_analyzed(self) -> bool:
+        """是否已完成深度分析"""
+        return self.deep_analysis is not None
+
     def summary(self) -> str:
         """生成知识库摘要"""
         total_elements = sum(len(p.elements) for p in self.pages.values())
         total_forms = sum(len(p.forms) for p in self.pages.values())
         total_nav = sum(len(p.navigation) for p in self.pages.values())
-        return (
-            f"站点: {self.site_name or self.domain}\n"
-            f"页面数: {len(self.pages)}\n"
-            f"交互元素: {total_elements}\n"
-            f"表单: {total_forms}\n"
-            f"导航链接: {total_nav}\n"
-            f"业务流程: {len(self.workflows)}\n"
-            f"最后扫描: {self.last_scan}"
-        )
+
+        analysis = self.get_deep_analysis()
+        skill_count = len(analysis.get_all_skills()) if analysis else 0
+        workflow_count = len(analysis.get_workflows()) if analysis else 0
+
+        lines = [
+            f"站点: {self.site_name or self.domain}",
+            f"页面数: {len(self.pages)}",
+            f"交互元素: {total_elements}",
+            f"表单: {total_forms}",
+            f"导航链接: {total_nav}",
+            f"页面技能: {skill_count}",
+            f"业务流程: {workflow_count}",
+            f"深度分析: {'✅ 已完成' if self.is_analyzed else '❌ 未分析'}",
+            f"最后扫描: {self.last_scan}",
+        ]
+
+        if analysis and analysis.business_entities:
+            lines.append(f"业务实体: {', '.join(analysis.business_entities)}")
+        if analysis and analysis.system_description:
+            lines.append(f"系统描述: {analysis.system_description[:200]}")
+
+        return "\n".join(lines)
 
 
 @dataclass
