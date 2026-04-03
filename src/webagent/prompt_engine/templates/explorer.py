@@ -91,3 +91,52 @@ EXPLORER_PAGE_ANALYSIS_PROMPT = """分析当前页面的结构和功能：
     "business_rules": ["识别到的业务规则"]
 }}
 """
+
+DATA_MOCK_PROMPT = """你是一个专业的系统测试数据生成专家。我们正在自动扫描一个Web系统，但遇到了一个必填表单阻碍了进一步探索。
+为了提交表单以查看后续的深层页面，请你根据页面内容和表单字段结构，生成一组看似合理的测试数据。
+
+页面标题: {title}
+页面URL: {url}
+表单描述/上下文: {form_context}
+
+以下是需要填写的字段：
+{fields_json}
+
+请以JSON格式返回需要填入的数据。要求：
+1. 数据符合字段名和上下文（例如如果是邮箱字段则填 test@example.com）。
+2. 只返回 JSON 键值对，键为字段的 name 属性，值为你生成的测试数据。
+3. 请确保必填字段(required)都有值。
+4. 有 options 约束的字段只能填选项内的值。
+
+返回格式示例：
+{{
+    "username": "test_user_01",
+    "password": "Password123!",
+    "email": "test@example.com"
+}}
+"""
+
+BLOCK_REASONING_PROMPT = """你是一个Web系统扫描智能体，目前在自动探索时遭遇了阻塞。
+请分析当前页面DOM状态、截图描述和最近操作，判断是什么阻碍了你继续前进？
+
+页面URL: {url}
+最近一次操作: {last_action}
+
+当前页面主要特征 (DOM片段):
+{dom_snippet}
+
+请判断阻塞原因，并将其分类（必须是以下分类之一并用大写）：
+- CAPTCHA: 需要滑块、图形或短信验证码等人机验证。
+- AUTH_REQUIRED: 需要提供登录凭证或许可权限，但我们没有账号密码。
+- COMPLEX_WIDGET: 遇到了复杂的自定义组件（如画板、拖拽上传区域），超出通用点击和填表能力。
+- UNKNOWN_ERROR: 服务器报错(5xx)或前端不可预期的提示框。
+
+然后请简要说明理由，并提供给人类用户的建议。
+
+返回 JSON 格式：
+{{
+    "reason_category": "CAPTCHA",
+    "description": "页面弹出了Google reCAPTCHA滑动验证码",
+    "suggestion_for_human": "请人工接管浏览器完成滑动验证码，随后智能体将继续。"
+}}
+"""

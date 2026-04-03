@@ -79,6 +79,45 @@ class NavLink:
 
 
 @dataclass
+class StateNode:
+    """状态树节点，表示主动学习扫描过程中的一个离散DOM状态"""
+    state_id: str                   # 状态哈希指纹
+    url: str                        # 关联 URL
+    title: str = ""
+    dom_snapshot: str = ""          # DOM片段或者特征
+    parent_id: str = ""             # 父级状态节点
+    action_to_reach: dict = field(default_factory=dict) # 记录如何达到此状态 {"action": "click", "target": "#submit"}
+    interactables: list[str] = field(default_factory=list) # 可交互的未点击元素选择器
+    is_dead_end: bool = False
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> StateNode:
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+@dataclass
+class BlockedPath:
+    """主动学习中的受阻路径，需要人工干预"""
+    url: str
+    state_id: str
+    action_attempted: str
+    target_selector: str
+    reason: str                     # e.g., "captcha_required", "sms_verification", "unknown_form_error"
+    screenshot_path: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> BlockedPath:
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
 class PageKnowledge:
     """单页面知识"""
     url: str
@@ -243,6 +282,8 @@ class SiteKnowledge:
     sitemap: list[str] = field(default_factory=list)
     workflows: list[dict[str, Any]] = field(default_factory=list)  # 旧字段保留兼容
     deep_analysis: dict | None = field(default=None)               # DeepAnalysis.to_dict()
+    state_tree: list[dict] = field(default_factory=list)           # StateNode.to_dict() 列表
+    blocked_paths: list[dict] = field(default_factory=list)        # BlockedPath.to_dict() 列表
     scan_depth: int = 0
     last_scan: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -316,8 +357,9 @@ class SiteKnowledge:
             f"交互元素: {total_elements}",
             f"表单: {total_forms}",
             f"导航链接: {total_nav}",
-            f"页面技能: {skill_count}",
             f"业务流程: {workflow_count}",
+            f"状态节点: {len(self.state_tree)}",
+            f"受阻路径: {len(self.blocked_paths)}",
             f"深度分析: {'✅ 已完成' if self.is_analyzed else '❌ 未分析'}",
             f"最后扫描: {self.last_scan}",
         ]

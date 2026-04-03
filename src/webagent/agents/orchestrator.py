@@ -135,6 +135,68 @@ class AgentOrchestrator:
             max_pages=max_pages,
         )
 
+    async def scan_deep(
+        self,
+        target_url: str,
+        depth: int = 3,
+        max_pages: int = 50,
+    ):
+        """
+        深度交互扫描，具有 AI 自动填表打通链路的功能
+        """
+        from webagent.agents.active_learner import ActiveLearner
+        learner = ActiveLearner(self.prompt_engine, self.knowledge_store)
+        return await learner.scan_deep(
+            target_url=target_url,
+            max_depth=depth,
+            max_nodes=max_pages,
+        )
+
+    async def resolve_blocked_paths(self, domain: str):
+        """
+        人工接管浏览器解决受阻的路径
+        """
+        from playwright.async_api import async_playwright
+        import json
+        
+        site = self.knowledge_store.load(domain)
+        if not site or not hasattr(site, 'blocked_paths') or not site.blocked_paths:
+            print_warning(f"站点 {domain} 没有记录的受阻路径。")
+            return
+            
+        print_agent("orchestrator", f"找到 {len(site.blocked_paths)} 个受阻路径，启动人工接管模式...")
+        
+        async with async_playwright() as p:
+            # 必须使用有头模式，让用户操作
+            browser = await p.chromium.launch(headless=False)
+            context = await browser.new_context(viewport={"width": 1280, "height": 800})
+            page = await context.new_page()
+            
+            resolved_indices = []
+            
+            for i, bp_dict in enumerate(site.blocked_paths):
+                bp = bp_dict
+                console.print(f"\n[bold cyan]受阻路径 {i+1}/{len(site.blocked_paths)}[/bold cyan]")
+                console.print(f"  [dim]URL:[/dim] {bp['url']}")
+                console.print(f"  [dim]阻碍原因:[/dim] {bp['reason']}")
+                console.print(f"  [dim]目标元素:[/dim] {bp['target_selector']}")
+                
+                await page.goto(bp['url'])
+                
+                # 等待用户在控制台确认操作完毕
+                from rich.prompt import Confirm
+                resolved = Confirm.ask("请在打开的浏览器中完成该操作（如填验证码、扫码）。完成后是否恢复扫描机制？")
+                if resolved:
+                    resolved_indices.append(i)
+                    
+            await browser.close()
+            
+        # 清理已解决的阻碍
+        if resolved_indices:
+            site.blocked_paths = [bp for i, bp in enumerate(site.blocked_paths) if i not in resolved_indices]
+            self.knowledge_store.save(site)
+            print_success(f"已清理 {len(resolved_indices)} 个受阻路径状态，您可以再次尝试运行 /scan-deep！")
+
     async def plan_only(
         self,
         instruction: str,

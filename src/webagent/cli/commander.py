@@ -129,6 +129,8 @@ class Commander:
         print_banner()
         console.print("  [dim]输入自然语言指令，或使用以下命令:[/dim]")
         console.print("  [dim]  /scan <url>     — 扫描Web系统（自动深度分析）[/dim]")
+        console.print("  [dim]  /scan-deep <url> — 深度交互扫描（支持造数填表打通链路）[/dim]")
+        console.print("  [dim]  /resolve <域名>  — 人工接管解决扫描中的阻碍点[/dim]")
         console.print("  [dim]  /analyze <域名>  — 手动触发深度分析[/dim]")
         console.print("  [dim]  /pageskills <域名> — 查看页面技能[/dim]")
         console.print("  [dim]  /export-claw <域名> — 导出为OpenClaw(龙虾)技能包[/dim]")
@@ -165,6 +167,15 @@ class Commander:
                         if not arg:
                             arg = Prompt.ask("  请输入目标URL")
                         asyncio.run(self._async_scan(arg))
+                    elif cmd == "/scan-deep":
+                        if not arg:
+                            arg = Prompt.ask("  请输入深度扫描目标URL")
+                        console.print(f"  [cyan]目标URL设为: {arg}[/cyan]")
+                        asyncio.run(self._async_scan_deep(arg))
+                    elif cmd == "/resolve":
+                        if not arg:
+                            arg = Prompt.ask("  请输入受阻站点域名")
+                        asyncio.run(self._async_resolve(arg))
                     elif cmd == "/kb":
                         self._handle_kb_interactive(arg)
                     elif cmd == "/skills":
@@ -441,6 +452,8 @@ class Commander:
 |------|------|
 | `<指令>` | 直接输入自然语言指令执行自动化任务 |
 | `/scan <url>` | 扫描Web系统（自动深度分析+技能生成） |
+| `/scan-deep <url>` | 🤖 主动交互扫描（AI造数填表，打通深层页面链路） |
+| `/resolve <域名>` | 🛠️ 人工接管：解决扫描期间遇到的阻塞（如验证码） |
 | `/analyze <域名>` | 对已扫描站点手动触发深度分析 |
 | `/pageskills <域名>` | 查看自动生成的页面技能 |
 | `/export-claw <域名>` | 🦞 导出为OpenClaw(龙虾)技能包 |
