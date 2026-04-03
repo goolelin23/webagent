@@ -1,6 +1,6 @@
 [project]
 name = "webagent"
-version = "0.1.0"
+version = "0.2.0"
 description = "智能Web自动化Agent系统 — 基于Browser Use + AI + Playwright的六层架构"
 readme = "README.md"
 requires-python = ">=3.11"
