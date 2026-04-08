@@ -168,16 +168,21 @@ class ActiveLearner:
         jury_reasoning: str = "",
     ):
         """将成功操作沉淀到知识库"""
+        import difflib
         action_id = f"{action.action_type}_{hashlib.md5(action.target_description.encode()).hexdigest()[:8]}"
 
-        # 检查是否已有相同操作
+        # 检查是否已有相同操作 (Semantic / Fuzzy Matching)
         for existing in site.learned_actions:
-            if existing.get("action_id") == action_id:
-                # 更新置信度
-                existing["success_count"] = existing.get("success_count", 0) + 1
-                existing["total_count"] = existing.get("total_count", 0) + 1
-                existing["confidence"] = existing["success_count"] / existing["total_count"]
-                return
+            if existing.get("page_url_pattern") == page_url.split("?")[0] and existing.get("action_type") == action.action_type:
+                sim = difflib.SequenceMatcher(None, existing.get("description", ""), action.target_description).ratio()
+                if sim > 0.8:
+                    # 更新置信度
+                    existing["success_count"] = existing.get("success_count", 0) + 1
+                    existing["total_count"] = existing.get("total_count", 0) + 1
+                    existing["confidence"] = existing["success_count"] / existing["total_count"]
+                    if getattr(action, 'element_id', None):
+                        existing["element_id"] = action.element_id
+                    return
 
         learned = LearnedAction(
             action_id=action_id,
@@ -192,17 +197,21 @@ class ActiveLearner:
             jury_score=jury_score,
             jury_reasoning=jury_reasoning,
         )
+        if getattr(action, 'element_id', None):
+            learned.element_id = action.element_id
         site.learned_actions.append(learned.to_dict())
         print_agent("active_learner", f"  💾 学习沉淀: {action.action_type} → {action.target_description} (陈审团 {jury_score:.1f}分)")
 
-    def _mark_action_failed(self, site: SiteKnowledge, action: VisionAction):
+    def _mark_action_failed(self, site: SiteKnowledge, action: VisionAction, page_url: str = ""):
         """标记一次失败操作"""
-        action_id = f"{action.action_type}_{hashlib.md5(action.target_description.encode()).hexdigest()[:8]}"
+        import difflib
         for existing in site.learned_actions:
-            if existing.get("action_id") == action_id:
-                existing["total_count"] = existing.get("total_count", 0) + 1
-                existing["confidence"] = existing.get("success_count", 0) / existing["total_count"]
-                return
+             if existing.get("page_url_pattern") == page_url.split("?")[0] and existing.get("action_type") == action.action_type:
+                 sim = difflib.SequenceMatcher(None, existing.get("description", ""), action.target_description).ratio()
+                 if sim > 0.8:
+                     existing["total_count"] = existing.get("total_count", 0) + 1
+                     existing["confidence"] = existing.get("success_count", 0) / existing["total_count"]
+                     return
 
     def _get_learned_actions_for_url(self, site: SiteKnowledge, url: str) -> list[dict]:
         """获取某个 URL 的已学习操作"""
@@ -234,13 +243,42 @@ class ActiveLearner:
         consecutive_failures = 0
         max_consecutive_failures = 3
 
+        import difflib
         for step in range(max_actions_per_page):
             # 1. 保存快照（用于回退）
             snapshot = await self._save_snapshot(page)
 
-            # 2. 截图 + 感知
-            print_agent("vision", f"  👁️ 视觉感知 (步骤 {step+1}/{max_actions_per_page})...")
-            vision_action = await self.vision.perceive(page, goal, action_history)
+            # --- 真·利用学习闭环 ---
+            reusable_action = None
+            known_actions = self._get_learned_actions_for_url(site, page.url)
+            for ka in known_actions:
+                ka_desc = f"{ka['action_type']} → {ka['description']}"
+                already_done = False
+                for hist in action_history:
+                    # Check if action was already done in this iteration
+                    if difflib.SequenceMatcher(None, hist.lower(), ka_desc.lower()).ratio() > 0.8:
+                        already_done = True
+                        break
+                if not already_done:
+                    # Construct a VisionAction to bypass perceive
+                    reusable_action = VisionAction(
+                        action_type=ka.get("action_type", "click"),
+                        target_description=ka.get("description", ""),
+                        coordinates=ka.get("coordinates", {}),
+                        value=ka.get("value", ""),
+                        element_id=ka.get("element_id", ""),
+                        selector_hint=ka.get("selector_hint", ""),
+                        reasoning="从知识库复用",
+                    )
+                    break
+
+            if reusable_action:
+                print_agent("active_learner", f"  📚 真·命中已知操作，跳过感知直接执行: {reusable_action.target_description}")
+                vision_action = reusable_action
+            else:
+                # 2. 截图 + 感知
+                print_agent("vision", f"  👁️ 视觉感知 (步骤 {step+1}/{max_actions_per_page})...")
+                vision_action = await self.vision.perceive(page, goal, action_history)
 
             # 3. 死胡同检测
             if vision_action.is_dead_end:
@@ -318,7 +356,7 @@ class ActiveLearner:
                     print_error(f"  🔴 检测到错误: {verify_result.error_message}")
 
                 action_history.append(f"[失败] {action_desc} — {verify_result.suggestion}")
-                self._mark_action_failed(site, vision_action)
+                self._mark_action_failed(site, vision_action, page.url)
 
                 # 回退到操作前快照
                 await self._restore_snapshot(page, snapshot)

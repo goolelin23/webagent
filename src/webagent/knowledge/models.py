@@ -124,6 +124,7 @@ class LearnedAction:
     page_url_pattern: str           # 可模糊匹配的 URL 片段
     action_type: str                # click, fill, scroll, select, hover
     description: str                # "点击左侧导航栏的用户管理"
+    element_id: str = ""            # SOM 标签元素数字ID
     coordinates: dict = field(default_factory=dict)  # {"x": 120, "y": 340}
     value: str = ""                 # 填表时的值
     selector_hint: str = ""         # 可选的CSS选择器提示

@@ -291,7 +291,7 @@ class TestActiveLearner:
         assert site.learned_actions[0]["confidence"] == 1.0
 
         # 标记一次失败
-        active_learner._mark_action_failed(site, action)
+        active_learner._mark_action_failed(site, action, "http://test.com")
         assert site.learned_actions[0]["total_count"] == 2
         assert site.learned_actions[0]["confidence"] == 0.5
 

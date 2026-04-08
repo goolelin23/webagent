@@ -163,21 +163,61 @@ JS_SCAN_NEARBY = """
 }
 """
 
-# 通过 CSS 选择器直接定位元素并返回其中心坐标
-JS_SELECTOR_CENTER = """
-(selector) => {
-    const el = document.querySelector(selector);
-    if (!el) return null;
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return null;
-    return {
-        x: Math.round(rect.left + rect.width / 2),
-        y: Math.round(rect.top + rect.height / 2),
-        width: Math.round(rect.width),
-        height: Math.round(rect.height),
-    };
+JS_DRAW_SOM = """
+() => {
+    let som_idx = 1;
+    window.__som_nodes__ = window.__som_nodes__ || [];
+    if(window.__som_nodes__.length > 0) return {}; // already drawn
+    const som_data = {};
+    const elements = document.querySelectorAll(
+        'button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [tabindex]:not([tabindex="-1"]), .button, .btn'
+    );
+    for (const el of elements) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0 || rect.top < 0 || rect.left < 0) continue;
+        const style = window.getComputedStyle(el);
+        if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
+
+        const idStr = String(som_idx++);
+        el.setAttribute('data-som-id', idStr);
+        som_data[idStr] = {
+            tag: el.tagName.toLowerCase(),
+            text: (el.textContent || '').trim().substring(0, 30)
+        };
+
+        const badge = document.createElement('div');
+        badge.textContent = idStr;
+        badge.style.position = 'absolute';
+        badge.style.top = `${rect.top + window.scrollY}px`;
+        badge.style.left = `${rect.left + window.scrollX}px`;
+        badge.style.backgroundColor = 'red';
+        badge.style.color = 'white';
+        badge.style.padding = '1px 4px';
+        badge.style.fontSize = '12px';
+        badge.style.fontWeight = 'bold';
+        badge.style.zIndex = '999999';
+        badge.style.pointerEvents = 'none';
+        badge.style.borderRadius = '3px';
+        badge.style.border = '1px solid white';
+        
+        document.body.appendChild(badge);
+        window.__som_nodes__.push(badge);
+    }
+    return som_data;
 }
 """
+
+JS_CLEAR_SOM = """
+() => {
+    if (window.__som_nodes__) {
+        for (const node of window.__som_nodes__) {
+            if (node.parentElement) node.parentElement.removeChild(node);
+        }
+        window.__som_nodes__ = [];
+    }
+}
+"""
+
 
 
 @dataclass
@@ -193,6 +233,7 @@ class VisionAction:
     is_dead_end: bool = False
     dead_end_reason: str = ""
     selector_hint: str = "" # CSS 选择器提示（精修后可能获得）
+    element_id: str = ""    # SOM 标记的独立ID，优先于坐标
 
 
 @dataclass
@@ -227,12 +268,27 @@ class VisionEngine:
             self.llm = get_llm()
         return self.llm
 
-    async def _screenshot(self, page: Page, label: str = "") -> str:
-        """截图并返回文件路径"""
+    async def _screenshot(self, page: Page, label: str = "", draw_som: bool = False) -> str:
+        """截图并返回文件路径。如果开启 draw_som，则会在截图前先叠加数字标识标签"""
         ts = int(time.time() * 1000)
         filename = f"{label}_{ts}.png" if label else f"screenshot_{ts}.png"
         path = self.screenshots_dir / filename
+        
+        if draw_som:
+            try:
+                await page.evaluate(JS_DRAW_SOM)
+                await asyncio.sleep(0.1) # render tick
+            except Exception as e:
+                logger.debug(f"Draw SOM 失败: {e}")
+
         await page.screenshot(path=str(path), full_page=False)
+
+        if draw_som:
+            try:
+                await page.evaluate(JS_CLEAR_SOM)
+            except Exception as e:
+                logger.debug(f"Clear SOM 失败: {e}")
+
         return str(path)
 
     def _image_to_base64(self, image_path: str) -> str:
@@ -485,8 +541,8 @@ class VisionEngine:
         """
         感知：截图 → 视觉模型推理下一步操作
         """
-        screenshot_path = await self._screenshot(page, "perceive")
-        print_agent("vision", f"📸 截图: {screenshot_path}")
+        screenshot_path = await self._screenshot(page, "perceive", draw_som=True)
+        print_agent("vision", f"📸 感知截图 (带分析标签): {screenshot_path}")
 
         history_text = "\n".join(
             f"  {i+1}. {a}" for i, a in enumerate(action_history or [])
@@ -514,6 +570,7 @@ class VisionEngine:
                     is_dead_end=data.get("is_dead_end", False),
                     dead_end_reason=data.get("dead_end_reason", ""),
                     selector_hint=na.get("selector_hint", ""),
+                    element_id=str(na.get("element_id", "")),
                 )
         except Exception as e:
             logger.warning(f"视觉感知失败: {e}")
@@ -612,19 +669,31 @@ class VisionEngine:
             return False
 
         # 对需要精准定位的操作，先执行坐标精修
-        if action_type in ("click", "double_click", "right_click", "fill", "select", "hover"):
-            x, y, selector, method = await self._refine_coordinates(
+        # 尝试通过 Playwright Load State 代替硬编码的 sleep
+        async def robust_wait(pg: Page):
+            try:
+                await pg.wait_for_load_state("networkidle", timeout=2000)
+            except:
+                await asyncio.sleep(0.5)
+
+        # 优先使用 SOM ID 进行绝对精确点击
+        selector = ""
+        if action.element_id:
+            selector = f'[data-som-id="{action.element_id}"]'
+
+        if not selector and action_type in ("click", "double_click", "right_click", "fill", "select", "hover"):
+            x, y, selector_refined, method = await self._refine_coordinates(
                 page, raw_x, raw_y, action.target_description
             )
             # 合并已知的 selector 提示
-            selector = selector or action.selector_hint
+            selector = selector_refined or action.selector_hint
         else:
-            x, y, selector = raw_x, raw_y, ""
+            x, y = raw_x, raw_y
 
         try:
             if action_type == "click":
                 success = await self._smart_click(page, x, y, selector)
-                await asyncio.sleep(0.5)
+                await robust_wait(page)
                 return success
 
             elif action_type == "double_click":
@@ -633,26 +702,27 @@ class VisionEngine:
                         locator = page.locator(selector)
                         if await locator.count() > 0:
                             await locator.first.dblclick(timeout=3000)
+                            await robust_wait(page)
                             return True
                     except Exception:
                         pass
                 await page.mouse.dblclick(x, y)
-                await asyncio.sleep(0.5)
+                await robust_wait(page)
                 return True
 
             elif action_type == "right_click":
                 await page.mouse.click(x, y, button="right")
-                await asyncio.sleep(0.5)
+                await robust_wait(page)
                 return True
 
             elif action_type == "hover":
                 await page.mouse.move(x, y)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.1)
                 return True
 
             elif action_type == "fill":
                 success = await self._smart_fill(page, x, y, action.value, selector)
-                await asyncio.sleep(0.3)
+                await robust_wait(page)
                 return success
 
             elif action_type == "select":
@@ -660,7 +730,7 @@ class VisionEngine:
                 click_ok = await self._smart_click(page, x, y, selector)
                 if not click_ok:
                     return False
-                await asyncio.sleep(0.8)
+                await asyncio.sleep(0.5)
 
                 if action.value:
                     # 尝试在展开的列表中找到目标选项
@@ -689,18 +759,18 @@ class VisionEngine:
                     await page.keyboard.type(action.value, delay=50)
                     await asyncio.sleep(0.3)
                     await page.keyboard.press("Enter")
-                    await asyncio.sleep(0.3)
+                    await robust_wait(page)
 
                 return True
 
             elif action_type == "scroll_down":
                 await page.mouse.wheel(0, 300)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
                 return True
 
             elif action_type == "scroll_up":
                 await page.mouse.wheel(0, -300)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
                 return True
 
             else:
