@@ -103,6 +103,106 @@ class TestVisionEngine:
         assert result.success
         assert result.page_changed
 
+    def test_vision_action_selector_hint(self):
+        """VisionAction 可以携带 selector 提示"""
+        action = VisionAction(
+            action_type="click",
+            target_description="提交按钮",
+            coordinates={"x": 500, "y": 300},
+            selector_hint="#submit-btn",
+        )
+        assert action.selector_hint == "#submit-btn"
+
+    @pytest.mark.asyncio
+    async def test_refine_coordinates_with_element(self):
+        """L1精修：elementFromPoint 找到元素后吸附到中心"""
+        engine = VisionEngine()
+        mock_page = MagicMock()
+        mock_page.evaluate = AsyncMock(return_value={
+            "original": {"x": 100, "y": 200},
+            "refined": {"x": 120, "y": 210},
+            "tag": "button",
+            "id": "submit",
+            "text": "提交",
+            "role": "",
+            "type": "submit",
+            "href": "",
+            "is_visible": True,
+            "is_interactive": True,
+            "bounding_box": {"x": 80, "y": 190, "width": 80, "height": 40},
+            "selector_hint": "#submit",
+        })
+
+        rx, ry, selector, method = await engine._refine_coordinates(mock_page, 100, 200)
+        assert rx == 120
+        assert ry == 210
+        assert selector == "#submit"
+        assert method == "refine"
+
+    @pytest.mark.asyncio
+    async def test_refine_coordinates_fallback_to_scan(self):
+        """L1失败时降级到L3附近扫描"""
+        engine = VisionEngine()
+        mock_page = MagicMock()
+
+        # L1返回None（没找到元素）
+        # L3返回附近元素列表
+        mock_page.evaluate = AsyncMock(side_effect=[
+            None,  # L1: elementFromPoint 未找到
+            [{"center_x": 115, "center_y": 205, "tag": "a", "text": "用户管理",
+              "id": "user-link", "distance": 15, "selector_hint": "#user-link"}],
+        ])
+
+        rx, ry, selector, method = await engine._refine_coordinates(
+            mock_page, 100, 200, "用户管理菜单"
+        )
+        assert rx == 115
+        assert ry == 205
+        assert method in ("scan_text", "scan_nearest")
+
+    @pytest.mark.asyncio
+    async def test_refine_coordinates_all_fail(self):
+        """所有精修策略都失败时返回原始坐标"""
+        engine = VisionEngine()
+        mock_page = MagicMock()
+        mock_page.evaluate = AsyncMock(side_effect=Exception("JS Error"))
+
+        rx, ry, selector, method = await engine._refine_coordinates(mock_page, 100, 200)
+        assert rx == 100
+        assert ry == 200
+        assert method == "raw"
+
+    @pytest.mark.asyncio
+    async def test_smart_click_selector_first(self):
+        """智能点击优先使用选择器"""
+        engine = VisionEngine()
+        mock_page = MagicMock()
+        mock_locator = MagicMock()
+        mock_locator.count = AsyncMock(return_value=1)
+        mock_locator.first = MagicMock()
+        mock_locator.first.is_visible = AsyncMock(return_value=True)
+        mock_locator.first.click = AsyncMock()
+        mock_page.locator = MagicMock(return_value=mock_locator)
+
+        result = await engine._smart_click(mock_page, 100, 200, "#my-button")
+        assert result is True
+        mock_locator.first.click.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_smart_click_fallback_to_coordinates(self):
+        """选择器失败时降级到坐标点击"""
+        engine = VisionEngine()
+        mock_page = MagicMock()
+        mock_locator = MagicMock()
+        mock_locator.count = AsyncMock(return_value=0)
+        mock_page.locator = MagicMock(return_value=mock_locator)
+        mock_page.mouse = MagicMock()
+        mock_page.mouse.click = AsyncMock()
+
+        result = await engine._smart_click(mock_page, 100, 200, "#missing")
+        assert result is True
+        mock_page.mouse.click.assert_called_once_with(100, 200)
+
 
 class TestActiveLearner:
     """ActiveLearner 核心逻辑测试"""

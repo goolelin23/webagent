@@ -1,6 +1,7 @@
 """
 视觉感知引擎
 通过截图 + 多模态大语言模型理解页面，取代传统的DOM解析
+支持坐标智能精修：视觉坐标 → DOM元素吸附 → 多策略兜底
 """
 
 from __future__ import annotations
@@ -20,10 +21,163 @@ from webagent.prompt_engine.templates.vision import (
     VISION_VERIFY_PROMPT,
     VISION_LOCATE_PROMPT,
 )
-from webagent.utils.logger import get_logger, print_agent
+from webagent.utils.logger import get_logger, print_agent, print_warning
 from webagent.utils.config import get_config, get_llm
 
 logger = get_logger("webagent.agents.vision_engine")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 坐标精修用的 JS 脚本
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# 通过 elementFromPoint 找到坐标位置的真实 DOM 元素，返回其 bounding box 中心和元素信息
+JS_REFINE_COORDINATE = """
+(coords) => {
+    const x = coords.x;
+    const y = coords.y;
+    const el = document.elementFromPoint(x, y);
+    if (!el) return null;
+
+    const rect = el.getBoundingClientRect();
+    const tag = el.tagName.toLowerCase();
+    const isInteractive = ['a', 'button', 'input', 'select', 'textarea', 'label'].includes(tag)
+        || el.getAttribute('role') === 'button'
+        || el.getAttribute('role') === 'menuitem'
+        || el.getAttribute('role') === 'tab'
+        || el.getAttribute('role') === 'link'
+        || el.onclick !== null
+        || el.style.cursor === 'pointer'
+        || window.getComputedStyle(el).cursor === 'pointer';
+
+    // 如果命中的不是交互元素，向上查找最近的交互祖先
+    let target = el;
+    if (!isInteractive) {
+        let parent = el.parentElement;
+        for (let i = 0; i < 5 && parent; i++) {
+            const ptag = parent.tagName.toLowerCase();
+            const pInteractive = ['a', 'button', 'input', 'select', 'textarea'].includes(ptag)
+                || parent.getAttribute('role') === 'button'
+                || parent.getAttribute('role') === 'menuitem'
+                || parent.onclick !== null
+                || window.getComputedStyle(parent).cursor === 'pointer';
+            if (pInteractive) {
+                target = parent;
+                break;
+            }
+            parent = parent.parentElement;
+        }
+    }
+
+    const targetRect = target.getBoundingClientRect();
+    const centerX = Math.round(targetRect.left + targetRect.width / 2);
+    const centerY = Math.round(targetRect.top + targetRect.height / 2);
+
+    return {
+        original: { x: x, y: y },
+        refined: { x: centerX, y: centerY },
+        tag: target.tagName.toLowerCase(),
+        id: target.id || '',
+        text: (target.textContent || '').trim().substring(0, 80),
+        role: target.getAttribute('role') || '',
+        type: target.getAttribute('type') || '',
+        href: target.getAttribute('href') || '',
+        is_visible: targetRect.width > 0 && targetRect.height > 0,
+        is_interactive: true,
+        bounding_box: {
+            x: Math.round(targetRect.x),
+            y: Math.round(targetRect.y),
+            width: Math.round(targetRect.width),
+            height: Math.round(targetRect.height),
+        },
+        selector_hint: target.id ? '#' + target.id
+            : (target.getAttribute('name') ? '[name=\"' + target.getAttribute('name') + '\"]' : ''),
+    };
+}
+"""
+
+# 在坐标附近的矩形区域内搜索所有可交互元素
+JS_SCAN_NEARBY = """
+(params) => {
+    const cx = params.x;
+    const cy = params.y;
+    const radius = params.radius || 50;
+
+    const results = [];
+    const seen = new Set();
+
+    // 在九宫格方向采样
+    const offsets = [
+        [0, 0], [-radius, 0], [radius, 0], [0, -radius], [0, radius],
+        [-radius, -radius], [radius, -radius], [-radius, radius], [radius, radius],
+        [-radius/2, 0], [radius/2, 0], [0, -radius/2], [0, radius/2],
+    ];
+
+    for (const [dx, dy] of offsets) {
+        const px = cx + dx;
+        const py = cy + dy;
+        if (px < 0 || py < 0) continue;
+
+        const el = document.elementFromPoint(px, py);
+        if (!el) continue;
+
+        // 向上找交互元素
+        let target = el;
+        let found = false;
+        for (let node = el; node && node !== document.body; node = node.parentElement) {
+            const tag = node.tagName.toLowerCase();
+            if (['a', 'button', 'input', 'select', 'textarea'].includes(tag)
+                || node.getAttribute('role') === 'button'
+                || node.getAttribute('role') === 'menuitem'
+                || node.getAttribute('role') === 'tab'
+                || node.onclick !== null
+                || window.getComputedStyle(node).cursor === 'pointer') {
+                target = node;
+                found = true;
+                break;
+            }
+        }
+        if (!found) continue;
+
+        // 去重
+        const key = target.tagName + '_' + target.id + '_' + (target.textContent || '').trim().substring(0, 30);
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const rect = target.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+
+        results.push({
+            center_x: Math.round(rect.left + rect.width / 2),
+            center_y: Math.round(rect.top + rect.height / 2),
+            tag: target.tagName.toLowerCase(),
+            text: (target.textContent || '').trim().substring(0, 80),
+            id: target.id || '',
+            distance: Math.sqrt((rect.left + rect.width/2 - cx) ** 2 + (rect.top + rect.height/2 - cy) ** 2),
+            selector_hint: target.id ? '#' + target.id : '',
+        });
+    }
+
+    // 按距离排序
+    results.sort((a, b) => a.distance - b.distance);
+    return results.slice(0, 5);
+}
+"""
+
+# 通过 CSS 选择器直接定位元素并返回其中心坐标
+JS_SELECTOR_CENTER = """
+(selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    return {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+    };
+}
+"""
 
 
 @dataclass
@@ -38,6 +192,7 @@ class VisionAction:
     visible_elements: list = field(default_factory=list)
     is_dead_end: bool = False
     dead_end_reason: str = ""
+    selector_hint: str = "" # CSS 选择器提示（精修后可能获得）
 
 
 @dataclass
@@ -55,7 +210,10 @@ class VisionEngine:
     """
     视觉感知引擎 — 智能体的"眼睛"
 
-    核心循环: 截图 → 多模态LLM推理 → 返回结构化操作
+    坐标精修策略（三层兜底）:
+      Layer 1: elementFromPoint(x,y) → 获取真实元素的 bounding box 中心
+      Layer 2: 如果L1命中了非交互元素 → 沿 DOM 树上溯找可交互祖先
+      Layer 3: 如果L1+L2都失败 → 在坐标附近50px半径内扫描可交互元素
     """
 
     def __init__(self, screenshots_dir: str = "screenshots"):
@@ -83,14 +241,11 @@ class VisionEngine:
             return base64.b64encode(f.read()).decode("utf-8")
 
     async def _call_vision_llm(self, prompt: str, image_paths: list[str]) -> str:
-        """
-        调用多模态 LLM（支持 Claude / GPT-4o / Gemini 的图片输入）
-        """
+        """调用多模态 LLM（支持 Claude / GPT-4o / Gemini 的图片输入）"""
         from langchain_core.messages import HumanMessage
 
         llm = self._get_llm()
 
-        # 构建包含图片的消息
         content = []
         for img_path in image_paths:
             b64 = self._image_to_base64(img_path)
@@ -110,14 +265,12 @@ class VisionEngine:
 
     def _extract_json(self, text: str) -> dict | None:
         """从 LLM 响应中提取 JSON"""
-        # 尝试 ```json 代码块
         match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group(1))
             except json.JSONDecodeError:
                 pass
-        # 直接尝试解析
         json_start = text.find("{")
         json_end = text.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
@@ -126,6 +279,198 @@ class VisionEngine:
             except json.JSONDecodeError:
                 pass
         return None
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 坐标精修（核心优化）
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def _refine_coordinates(
+        self,
+        page: Page,
+        x: int,
+        y: int,
+        target_description: str = "",
+    ) -> tuple[int, int, str, str]:
+        """
+        坐标精修：将视觉模型给的粗略坐标精修为真实 DOM 元素的中心点
+
+        策略:
+          1. elementFromPoint(x,y) → 吸附到真实元素中心
+          2. 向上查找可交互祖先（按钮、链接等）
+          3. 附近区域扫描
+
+        Returns:
+            (refined_x, refined_y, selector_hint, method_used)
+        """
+        # ── Layer 1 + 2: elementFromPoint + 祖先上溯 ──
+        try:
+            result = await page.evaluate(JS_REFINE_COORDINATE, {"x": x, "y": y})
+            if result and result.get("is_visible"):
+                rx = result["refined"]["x"]
+                ry = result["refined"]["y"]
+                selector = result.get("selector_hint", "")
+                tag = result.get("tag", "")
+                text = result.get("text", "")[:40]
+
+                # 检查精修后的偏移量
+                offset = ((rx - x) ** 2 + (ry - y) ** 2) ** 0.5
+                if offset > 0:
+                    logger.info(
+                        f"坐标精修: ({x},{y}) → ({rx},{ry}) "
+                        f"[{tag}] \"{text}\" (偏移 {offset:.0f}px)"
+                    )
+                    print_agent("vision", f"  🎯 坐标精修: ({x},{y}) → ({rx},{ry}) [{tag}] \"{text}\"")
+                return rx, ry, selector, "refine"
+        except Exception as e:
+            logger.debug(f"坐标精修 L1 失败: {e}")
+
+        # ── Layer 3: 附近区域扫描 ──
+        try:
+            nearby = await page.evaluate(JS_SCAN_NEARBY, {"x": x, "y": y, "radius": 50})
+            if nearby and len(nearby) > 0:
+                # 优先找文本匹配的
+                if target_description:
+                    desc_lower = target_description.lower()
+                    for item in nearby:
+                        item_text = item.get("text", "").lower()
+                        if any(kw in item_text for kw in desc_lower.split()[:3]):
+                            nx, ny = item["center_x"], item["center_y"]
+                            print_agent("vision",
+                                f"  🔍 附近扫描命中: ({x},{y}) → ({nx},{ny}) "
+                                f"[{item['tag']}] \"{item['text'][:30]}\" (距离 {item['distance']:.0f}px)")
+                            return nx, ny, item.get("selector_hint", ""), "scan_text"
+
+                # 没有文本匹配则用最近的
+                best = nearby[0]
+                nx, ny = best["center_x"], best["center_y"]
+                print_agent("vision",
+                    f"  🔍 附近最近元素: ({x},{y}) → ({nx},{ny}) "
+                    f"[{best['tag']}] \"{best['text'][:30]}\" (距离 {best['distance']:.0f}px)")
+                return nx, ny, best.get("selector_hint", ""), "scan_nearest"
+        except Exception as e:
+            logger.debug(f"附近扫描失败: {e}")
+
+        # 所有策略都失败，返回原始坐标
+        logger.info(f"坐标精修未找到元素，使用原始坐标 ({x},{y})")
+        return x, y, "", "raw"
+
+    async def _smart_click(self, page: Page, x: int, y: int, selector: str = "") -> bool:
+        """
+        智能点击：优先用 selector，用不了再用精修坐标
+
+        Returns:
+            是否成功点击
+        """
+        # 策略1: 如果有 CSS 选择器，优先使用 Playwright 的元素级点击
+        if selector:
+            try:
+                locator = page.locator(selector)
+                if await locator.count() > 0 and await locator.first.is_visible():
+                    await locator.first.click(timeout=3000)
+                    print_agent("vision", f"  ✅ 选择器点击成功: {selector}")
+                    return True
+            except Exception as e:
+                logger.debug(f"选择器点击失败 [{selector}]: {e}")
+
+        # 策略2: 使用精修后的坐标点击
+        try:
+            await page.mouse.click(x, y)
+            return True
+        except Exception as e:
+            logger.debug(f"坐标点击失败 ({x},{y}): {e}")
+
+        # 策略3: 用 JS 直接触发点击事件
+        try:
+            clicked = await page.evaluate(f"""
+                (() => {{
+                    const el = document.elementFromPoint({x}, {y});
+                    if (el) {{
+                        el.click();
+                        return true;
+                    }}
+                    return false;
+                }})()
+            """)
+            if clicked:
+                print_agent("vision", f"  ✅ JS 点击兜底成功")
+                return True
+        except Exception as e:
+            logger.debug(f"JS 点击失败: {e}")
+
+        return False
+
+    async def _smart_fill(self, page: Page, x: int, y: int, value: str, selector: str = "") -> bool:
+        """
+        智能填写：优先用 selector 定位输入框
+        """
+        # 策略1: 选择器
+        if selector:
+            try:
+                locator = page.locator(selector)
+                if await locator.count() > 0:
+                    await locator.first.clear()
+                    await locator.first.fill(value)
+                    print_agent("vision", f"  ✅ 选择器填写成功: {selector}")
+                    return True
+            except Exception as e:
+                logger.debug(f"选择器填写失败 [{selector}]: {e}")
+
+        # 策略2: 先找到坐标位置的输入框元素
+        try:
+            # 用 elementFromPoint 找到元素，检查它是否是 input/textarea
+            el_info = await page.evaluate("""
+                (coords) => {
+                    const el = document.elementFromPoint(coords.x, coords.y);
+                    if (!el) return null;
+                    // 如果不是输入框，看看里面有没有输入框
+                    let target = el;
+                    const tag = el.tagName.toLowerCase();
+                    if (!['input', 'textarea', 'select'].includes(tag)) {
+                        const inner = el.querySelector('input, textarea');
+                        if (inner) target = inner;
+                    }
+                    const ttag = target.tagName.toLowerCase();
+                    if (['input', 'textarea'].includes(ttag)) {
+                        const rect = target.getBoundingClientRect();
+                        return {
+                            tag: ttag,
+                            id: target.id || '',
+                            name: target.getAttribute('name') || '',
+                            center_x: Math.round(rect.left + rect.width / 2),
+                            center_y: Math.round(rect.top + rect.height / 2),
+                        };
+                    }
+                    return null;
+                }
+            """, {"x": x, "y": y})
+
+            if el_info:
+                # 构建选择器
+                fill_selector = ""
+                if el_info.get("id"):
+                    fill_selector = f"#{el_info['id']}"
+                elif el_info.get("name"):
+                    fill_selector = f"[name='{el_info['name']}']"
+
+                if fill_selector:
+                    locator = page.locator(fill_selector)
+                    await locator.first.clear()
+                    await locator.first.fill(value)
+                    print_agent("vision", f"  ✅ 精修后填写成功: {fill_selector}")
+                    return True
+        except Exception as e:
+            logger.debug(f"精修填写失败: {e}")
+
+        # 策略3: 坐标点击后键盘输入
+        try:
+            await page.mouse.click(x, y)
+            await asyncio.sleep(0.3)
+            await page.keyboard.press("Control+a")
+            await page.keyboard.type(value, delay=30)
+            return True
+        except Exception as e:
+            logger.debug(f"坐标键盘输入失败: {e}")
+            return False
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 核心方法
@@ -139,13 +484,6 @@ class VisionEngine:
     ) -> VisionAction:
         """
         感知：截图 → 视觉模型推理下一步操作
-
-        Args:
-            page: Playwright 页面
-            goal: 当前探索目标（如 "探索系统所有功能"）
-            action_history: 已执行的操作历史
-        Returns:
-            VisionAction 下一步操作
         """
         screenshot_path = await self._screenshot(page, "perceive")
         print_agent("vision", f"📸 截图: {screenshot_path}")
@@ -175,17 +513,17 @@ class VisionEngine:
                     visible_elements=data.get("visible_elements", []),
                     is_dead_end=data.get("is_dead_end", False),
                     dead_end_reason=data.get("dead_end_reason", ""),
+                    selector_hint=na.get("selector_hint", ""),
                 )
         except Exception as e:
             logger.warning(f"视觉感知失败: {e}")
 
-        # 降级：返回死胡同
         return VisionAction(
             action_type="none",
             target_description="",
             coordinates={"x": 0, "y": 0},
             is_dead_end=True,
-            dead_end_reason=f"视觉感知异常: {e}" if 'e' in dir() else "未知错误",
+            dead_end_reason=f"视觉感知异常",
         )
 
     async def verify(
@@ -194,16 +532,7 @@ class VisionEngine:
         screenshot_before: str,
         action_description: str,
     ) -> tuple[VerifyResult, str]:
-        """
-        验证：对比操作前后截图，判断操作是否成功
-
-        Args:
-            page: Playwright 页面
-            screenshot_before: 操作前截图路径
-            action_description: 执行的操作描述
-        Returns:
-            (VerifyResult, screenshot_after_path)
-        """
+        """验证：对比操作前后截图，判断操作是否成功"""
         screenshot_after = await self._screenshot(page, "verify")
         print_agent("vision", f"📸 验证截图: {screenshot_after}")
 
@@ -229,7 +558,6 @@ class VisionEngine:
         except Exception as e:
             logger.warning(f"视觉验证失败: {e}")
 
-        # 降级：假设失败
         return VerifyResult(
             success=False,
             change_description="视觉验证异常",
@@ -240,15 +568,7 @@ class VisionEngine:
         page: Page,
         element_description: str,
     ) -> tuple[int, int, float]:
-        """
-        视觉定位：找到指定元素的坐标
-
-        Args:
-            page: Playwright 页面
-            element_description: 元素的自然语言描述
-        Returns:
-            (x, y, confidence)
-        """
+        """视觉定位：找到指定元素的坐标"""
         screenshot_path = await self._screenshot(page, "locate")
 
         prompt = VISION_LOCATE_PROMPT.format(
@@ -277,71 +597,115 @@ class VisionEngine:
         action: VisionAction,
     ) -> bool:
         """
-        执行视觉操作（基于坐标）
+        执行视觉操作（带坐标精修 + 多策略兜底）
 
-        Args:
-            page: Playwright 页面
-            action: 视觉模型推理出的操作
-        Returns:
-            是否执行成功（不含验证）
+        流程:
+          1. 视觉模型给出粗略坐标 (x, y)
+          2. _refine_coordinates: elementFromPoint → 吸附到真实元素中心
+          3. _smart_click / _smart_fill: 选择器优先 → 精修坐标 → JS 兜底
         """
-        x = action.coordinates.get("x", 0)
-        y = action.coordinates.get("y", 0)
+        raw_x = action.coordinates.get("x", 0)
+        raw_y = action.coordinates.get("y", 0)
         action_type = action.action_type
+
+        if action_type in ("none",):
+            return False
+
+        # 对需要精准定位的操作，先执行坐标精修
+        if action_type in ("click", "double_click", "right_click", "fill", "select", "hover"):
+            x, y, selector, method = await self._refine_coordinates(
+                page, raw_x, raw_y, action.target_description
+            )
+            # 合并已知的 selector 提示
+            selector = selector or action.selector_hint
+        else:
+            x, y, selector = raw_x, raw_y, ""
 
         try:
             if action_type == "click":
-                await page.mouse.click(x, y)
+                success = await self._smart_click(page, x, y, selector)
                 await asyncio.sleep(0.5)
+                return success
 
             elif action_type == "double_click":
+                if selector:
+                    try:
+                        locator = page.locator(selector)
+                        if await locator.count() > 0:
+                            await locator.first.dblclick(timeout=3000)
+                            return True
+                    except Exception:
+                        pass
                 await page.mouse.dblclick(x, y)
                 await asyncio.sleep(0.5)
+                return True
 
             elif action_type == "right_click":
                 await page.mouse.click(x, y, button="right")
                 await asyncio.sleep(0.5)
+                return True
 
             elif action_type == "hover":
                 await page.mouse.move(x, y)
                 await asyncio.sleep(0.3)
+                return True
 
             elif action_type == "fill":
-                # 先点击输入框，再输入
-                await page.mouse.click(x, y)
+                success = await self._smart_fill(page, x, y, action.value, selector)
                 await asyncio.sleep(0.3)
-                # 先选中全部再输入（覆盖）
-                await page.keyboard.press("Control+a")
-                await page.keyboard.type(action.value, delay=30)
-                await asyncio.sleep(0.3)
+                return success
 
             elif action_type == "select":
-                # 对下拉框：先点击展开
-                await page.mouse.click(x, y)
+                # 先点击展开下拉框
+                click_ok = await self._smart_click(page, x, y, selector)
+                if not click_ok:
+                    return False
                 await asyncio.sleep(0.8)
-                # 如果有 value，尝试用键盘输入搜索/选择
+
                 if action.value:
+                    # 尝试在展开的列表中找到目标选项
+                    found_option = await page.evaluate(f"""
+                        (() => {{
+                            const options = document.querySelectorAll(
+                                '.ant-select-item, .el-select-dropdown__item, '
+                                + '[role="option"], [role="listbox"] li, '
+                                + '.dropdown-item, .dropdown-menu li, option'
+                            );
+                            for (const opt of options) {{
+                                if (opt.textContent.trim().includes('{action.value}')) {{
+                                    opt.click();
+                                    return true;
+                                }}
+                            }}
+                            return false;
+                        }})()
+                    """)
+                    if found_option:
+                        print_agent("vision", f"  ✅ 下拉选项定位成功: {action.value}")
+                        await asyncio.sleep(0.3)
+                        return True
+
+                    # 兜底：键盘输入搜索
                     await page.keyboard.type(action.value, delay=50)
                     await asyncio.sleep(0.3)
                     await page.keyboard.press("Enter")
                     await asyncio.sleep(0.3)
 
+                return True
+
             elif action_type == "scroll_down":
                 await page.mouse.wheel(0, 300)
                 await asyncio.sleep(0.5)
+                return True
 
             elif action_type == "scroll_up":
                 await page.mouse.wheel(0, -300)
                 await asyncio.sleep(0.5)
-
-            elif action_type == "none":
-                return False
+                return True
 
             else:
                 logger.warning(f"未知的视觉操作类型: {action_type}")
                 return False
-
-            return True
 
         except Exception as e:
             logger.warning(f"视觉操作执行失败: {e}")
