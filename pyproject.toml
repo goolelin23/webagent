@@ -1,23 +1,25 @@
 [project]
 name = "webagent"
 version = "0.3.0"
-description = "智能Web自动化Agent系统 — 基于Browser Use + AI + Playwright的六层架构"
+description = "智能Web自动化Agent系统 — 基于视觉驱动 + AI + Playwright的六层架构"
+authors = [
+    { name = "goolelin23", email = "coolelin@gmail.com" }
+]
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
-
 dependencies = [
     "browser-use>=0.12.0",
     "playwright>=1.40.0",
-    # LLM 提供商 (支持 OpenAI / Claude / Gemini / 千问)
     "langchain-openai>=0.1.0",
     "langchain-anthropic>=0.1.0",
     "langchain-google-genai>=2.0.0",
-    # 基础设施
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0",
     "rich>=13.0.0",
 ]
+
+[project.scripts]
+webagent = "webagent.main:cli_entry"
 
 [project.optional-dependencies]
 dev = [
@@ -25,15 +27,12 @@ dev = [
     "pytest-asyncio>=0.23.0",
 ]
 
-[project.scripts]
-webagent = "webagent.main:cli_entry"
-
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/webagent"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
