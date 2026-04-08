@@ -1,182 +1,108 @@
-# 🤖 智能Web自动化Agent系统 (WebAgent)
+# 🤖 智能Web自动化Agent系统 (WebAgent) v0.4.0
 
-基于 **Browser Use + AI + Playwright** 的六层架构智能体自动化操作系统。
+基于 **视觉感知 + 多Agent陪审团 + 梦境自清理** 的新一代智能Web自动化操作系统。
 
-通过自然语言指令，自动完成Web系统的扫描学习和自动化操作。
+通过截图理解（Vision-Driven）取代传统的 DOM 元素定位，实现更接近人类行为、更具自愈能力的自动化交互。
+
+---
 
 ## ✨ 核心特性
 
-- 🔍 **智能扫描** — 使用 Browser Use 自动探索Web系统，构建知识库
-- 📋 **自然语言规划** — 将自然语言指令转化为精确的执行步骤
-- ⚡ **精准执行** — 基于 Playwright 的精准页面操作
-- 🔄 **自愈机制** — 失败自动重试、弹窗处理、路径重新规划
-- 🔧 **技能插件** — 可扩展的技能系统（价格计算、日期处理等）
-- 🛡️ **安全治理** — 风险分类、权限管理、审计日志
+- 👁️ **视觉驱动定位 (Vision-Engine)** — 丢弃不稳定的 DOM 选择器，通过截图理解和坐标精修 `elementFromPoint` 精准操作。
+- ⚖️ **多Agent陪审团 (Jury Panel)** — 每一个成功的操作都会经过"探索、业务、质量"三个维度的 AI 交叉评审，杜绝无效沉淀。
+- 💤 **梦境自清理 (Dream Mode)** — 知识库会自动"睡眠整理"，合并重复操作、清除低分垃圾、通过 LLM 升华业务总结。
+- 🔍 **深度视觉扫描** — `/scan-deep` 模式通过视觉闭环自动探索系统，构建带置信度跟踪的原子操作库。
+- ⚡ **uv 高性能驱动** — 全面迁移至 `uv` 工具链，提供毫秒级依赖同步与零冲突的环境隔离。
+- 🛡️ **安全审计** — 风险分类拦截，确保删除、修改等高危操作必须经过人工二次确认。
 
-## 🏗️ 六层架构
+---
+
+## 🏗️ 核心架构 (V4)
 
 ```
-┌─────────────────────────────────────────┐
-│     第一层：入口层 (CLI)                 │
-│     支持交互模式 / 单次指令 / 扫描模式    │
-├─────────────────────────────────────────┤
-│     第二层：提示词引擎                    │
-│     动态拼装 + 业务上下文注入             │
-├─────────────────────────────────────────┤
-│     第三层：Agent 调度                    │
-│     探索Agent / 规划Agent / 执行Agent     │
-├─────────────────────────────────────────┤
-│     第四层：工具管线                      │
-│     状态校验 → 安全过滤 → 执行 → 重试     │
-├─────────────────────────────────────────┤
-│     第五层：生态扩展                      │
-│     技能插件系统 (价格计算/日期格式化...)   │
-├─────────────────────────────────────────┤
-│     第六层：安全治理                      │
-│     风险分类器 / 权限管理 / 审计日志       │
-└─────────────────────────────────────────┘
+┌───────────────────────────────────────────┐
+│        入口层 (CLI / uv run)               │
+│      交互 / 扫描 / 梦境整理 / 回放         │
+├───────────────────────────────────────────┤
+│        决策与评审层 (Jury Panel)           │
+│     操作执行 → 视觉验证 → 陪审团评分       │
+├───────────────────────────────────────────┤
+│        视觉感知层 (Vision Engine)          │
+│     截图 → 推理 → 坐标精修 → 兜底操作      │
+├───────────────────────────────────────────┤
+│        自进化知识库 (Dream Mode)           │
+│     原子操作链 (LearnedAction) → 知识摘要  │
+├───────────────────────────────────────────┤
+│        管线与安全 (Pipeline & Safety)      │
+│     自愈回退 → 风险过滤 → 审计日志         │
+└───────────────────────────────────────────┘
 ```
+
+---
 
 ## 🚀 快速开始
 
-### 1. 环境要求
+### 1. 安装 uv (推荐)
+`uv` 是目前最快的 Python 包管理器，它能确保环境永不冲突。
 
-- Python >= 3.11
-- 至少一个 LLM API Key (OpenAI / Anthropic / Google)
+- **Mac/Linux**: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- **Windows**: `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`
 
-### 2. 安装
-
+### 2. 初始化项目
 ```bash
 # 克隆项目
+git clone https://github.com/goolelin23/webagent.git
 cd webagent
 
-# 创建虚拟环境
-python -m venv .venv
-source .venv/bin/activate
+# 自动同步环境 (含 Python 3.11 及所有依赖)
+uv sync
 
-# 安装依赖
-pip install -e .
-
-# 安装 Playwright 浏览器
-playwright install chromium
+# 安装浏览器驱动
+uv run playwright install chromium
 ```
 
 ### 3. 配置
-
 ```bash
-# 复制环境变量模板
 cp .env.example .env
-
-# 编辑 .env 文件，配置你的 API Key
-# OPENAI_API_KEY=your-api-key
+# 编辑 .env 配置你的 OPENAI_API_KEY 或 GEMINI_API_KEY
 ```
 
-### 4. 使用
+---
 
-#### 交互模式
+## 📋 常用指令集
+
+### 视觉驱动探索
 ```bash
-python -m webagent
-# 或
-webagent
+# 启动视觉驱动深度扫描
+uv run webagent scan --url https://example.com --deep
+
+# 进入交互式 Agent (支持自然语言对话)
+uv run webagent run
 ```
 
-#### 执行指令
+### 知识管理与优化
 ```bash
-webagent run "按照最新流程创建一个采购订单" --url https://your-system.com
+# 💤 启动梦境模式：整理、去重、清理站点知识库
+uv run webagent /dream example.com
+
+# 🔄 回放已学习的操作路径
+uv run webagent /replay example.com
+
+# 查看所有已学到的操作
+uv run webagent kb list
 ```
 
-#### 扫描系统
-```bash
-webagent scan --url https://your-system.com --depth 3
-```
+---
 
-#### 查看知识库
-```bash
-webagent kb list
-webagent kb show your-system.com
-```
+## ⚖️ 陪审团制度
 
-#### 查看技能
-```bash
-webagent skills
-```
+每一个被记录到知识库的操作都必须通过平均 6 分以上的评审：
+*   **探索价值**：是否发现了新页面或新状态？
+*   **业务价值**：是否推进了真实的业务流程（如填表、进入菜单）？
+*   **质量评分**：坐标是否精准，是有已有 CSS 选择器兜底？
 
-## 📋 交互模式命令
+---
 
-| 命令 | 说明 |
-|------|------|
-| `<指令>` | 直接输入自然语言指令 |
-| `/scan <url>` | 扫描Web系统 |
-| `/plan <指令>` | 仅生成执行计划 |
-| `/kb list` | 查看知识库列表 |
-| `/domain <name>` | 设置业务领域 |
-| `/url <url>` | 设置目标URL |
-| `/skills` | 查看技能插件 |
-| `/quit` | 退出 |
+## 📜 许可证
 
-## 🔧 业务领域
-
-系统预置了三个业务领域模板：
-
-- **supply_chain** — 供应链管理（采购订单、收货、库存）
-- **hr** — 人力资源管理（入职、考勤、薪资）
-- **ecommerce** — 电子商务（商品管理、订单处理）
-
-```bash
-webagent run "创建采购订单" --domain supply_chain --url https://erp.example.com
-```
-
-## 🔌 技能插件开发
-
-创建自定义技能插件：
-
-```python
-# src/webagent/skills/builtin/my_skill.py
-
-from webagent.skills.base_skill import BaseSkill, SkillResult
-
-class MyCustomSkill(BaseSkill):
-    name = "my_skill"
-    description = "我的自定义技能"
-    version = "1.0.0"
-
-    async def execute(self, params: dict) -> SkillResult:
-        result = params.get("input", "") + " processed"
-        return SkillResult(success=True, value=result)
-```
-
-放入 `src/webagent/skills/builtin/` 目录，系统会自动发现并注册。
-
-## 🛡️ 安全级别
-
-在 `.env` 中设置安全级别：
-
-| 级别 | 说明 |
-|------|------|
-| `low` | 仅拦截 CRITICAL 操作 |
-| `medium` | 拦截 HIGH + CRITICAL（默认） |
-| `high` | 拦截 MEDIUM + HIGH + CRITICAL |
-
-涉及**删除数据、修改系统配置、批量操作**等高风险行为会被自动拦截并要求人工审批。
-
-## 📁 项目结构
-
-```
-webagent/
-├── src/webagent/
-│   ├── cli/           # 第一层：入口层
-│   ├── prompt_engine/ # 第二层：提示词引擎
-│   ├── agents/        # 第三层：Agent调度
-│   ├── pipeline/      # 第四层：工具管线
-│   ├── skills/        # 第五层：生态扩展
-│   ├── safety/        # 第六层：安全治理
-│   ├── knowledge/     # 知识库
-│   └── utils/         # 工具集
-├── knowledge_base/    # 知识库数据
-├── logs/              # 日志
-└── tests/             # 测试
-```
-
-## 📜 License
-
-MIT
+本项目基于 MIT 协议开源。
