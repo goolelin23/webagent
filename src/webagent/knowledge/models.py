@@ -132,6 +132,8 @@ class LearnedAction:
     confidence: float = 1.0         # 成功次数/总执行次数
     success_count: int = 1
     total_count: int = 1
+    jury_score: float = 0.0         # 陪审团评分 (0-10)
+    jury_reasoning: str = ""        # 陪审团评价理由
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> dict:
@@ -310,6 +312,7 @@ class SiteKnowledge:
     state_tree: list[dict] = field(default_factory=list)           # StateNode.to_dict() 列表
     blocked_paths: list[dict] = field(default_factory=list)        # BlockedPath.to_dict() 列表
     learned_actions: list[dict] = field(default_factory=list)      # LearnedAction.to_dict() 列表
+    dream_log: list[dict] = field(default_factory=list)            # 梦境清理历史
     scan_depth: int = 0
     last_scan: str = field(default_factory=lambda: datetime.now().isoformat())
 

@@ -18,6 +18,7 @@ from webagent.knowledge.models import (
 )
 from webagent.knowledge.store import KnowledgeStore
 from webagent.agents.vision_engine import VisionEngine, VisionAction, VerifyResult
+from webagent.agents.jury import JuryPanel
 from webagent.prompt_engine.engine import PromptEngine
 from webagent.prompt_engine.templates.explorer import DATA_MOCK_PROMPT, BLOCK_REASONING_PROMPT
 from webagent.utils.logger import get_logger, print_agent, print_success, print_warning, print_error
@@ -35,6 +36,7 @@ class ActiveLearner:
         self.config = get_config()
         self.llm = get_llm()
         self.vision = VisionEngine()
+        self.jury = JuryPanel()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # DOM 工具方法（保留兼容）
@@ -162,6 +164,8 @@ class ActiveLearner:
         screenshot_before: str,
         screenshot_after: str,
         page_url: str,
+        jury_score: float = 0.0,
+        jury_reasoning: str = "",
     ):
         """将成功操作沉淀到知识库"""
         action_id = f"{action.action_type}_{hashlib.md5(action.target_description.encode()).hexdigest()[:8]}"
@@ -185,9 +189,11 @@ class ActiveLearner:
             selector_hint="",
             screenshot_before=screenshot_before,
             screenshot_after=screenshot_after,
+            jury_score=jury_score,
+            jury_reasoning=jury_reasoning,
         )
         site.learned_actions.append(learned.to_dict())
-        print_agent("active_learner", f"  💾 学习沉淀: {action.action_type} → {action.target_description}")
+        print_agent("active_learner", f"  💾 学习沉淀: {action.action_type} → {action.target_description} (陈审团 {jury_score:.1f}分)")
 
     def _mark_action_failed(self, site: SiteKnowledge, action: VisionAction):
         """标记一次失败操作"""
@@ -273,12 +279,33 @@ class ActiveLearner:
                 successful_actions.append(vision_action)
                 consecutive_failures = 0
 
-                # 8. 沉淀到知识库
-                self._learn_action(
-                    site, vision_action,
-                    screenshot_before, screenshot_after,
-                    page.url,
+                # 8. 陪审团评审
+                verdict = await self.jury.review_action(
+                    action_type=vision_action.action_type,
+                    action_description=vision_action.target_description,
+                    coordinates=vision_action.coordinates,
+                    selector_hint=vision_action.selector_hint,
+                    page_url=page.url,
+                    page_change=verify_result.change_description,
+                    exploration_goal=goal,
+                    learned_count=len(site.learned_actions),
+                    step_number=step + 1,
                 )
+
+                if verdict.approved:
+                    # 9. 通过评审 → 沉淀到知识库
+                    self._learn_action(
+                        site, vision_action,
+                        screenshot_before, screenshot_after,
+                        page.url,
+                        jury_score=verdict.average_score,
+                        jury_reasoning=verdict.summary,
+                    )
+                else:
+                    print_warning(
+                        f"  ❌ 陪审团否决 ({verdict.average_score:.1f}分): {verdict.summary}"
+                    )
+                    action_history.append(f"[否决] {action_desc} — {verdict.summary}")
 
                 # 如果页面发生了导航变化，可能需要递归探索
                 if verify_result.page_changed and page.url != snapshot["url"]:

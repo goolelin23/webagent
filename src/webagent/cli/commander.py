@@ -132,6 +132,7 @@ class Commander:
         console.print("  [dim]  /scan-deep <url> — 👁️ 视觉驱动深度扫描（截图理解+自验证+自愈回退）[/dim]")
         console.print("  [dim]  /resolve <域名>  — 人工接管解决扫描中的阻碍点[/dim]")
         console.print("  [dim]  /replay <域名>   — 回放已学习的操作路径[/dim]")
+        console.print("  [dim]  /dream <域名>    — 💤 梦境模式 (知识库自我整理清理)[/dim]")
         console.print("  [dim]  /analyze <域名>  — 手动触发深度分析[/dim]")
         console.print("  [dim]  /pageskills <域名> — 查看页面技能[/dim]")
         console.print("  [dim]  /export-claw <域名> — 导出为OpenClaw(龙虾)技能包[/dim]")
@@ -181,6 +182,8 @@ class Commander:
                         if not arg:
                             arg = Prompt.ask("  请输入站点域名")
                         asyncio.run(self._async_replay(arg))
+                    elif cmd == "/dream":
+                        asyncio.run(self._async_dream(arg))
                     elif cmd == "/kb":
                         self._handle_kb_interactive(arg)
                     elif cmd == "/skills":
@@ -398,6 +401,22 @@ class Commander:
             console.print(table)
         except Exception as e:
             console.print(f"  [bold red]回放失败: {e}[/bold red]")
+
+    async def _async_dream(self, domain: str = ""):
+        """异步执行梦境知识整理"""
+        orchestrator = self._get_orchestrator()
+        from webagent.agents.dreamer import Dreamer
+        dreamer = Dreamer(orchestrator.knowledge_store)
+        
+        try:
+            if domain:
+                console.print(f"\n  [magenta]💤 正在进入梦境整理 [{domain}] 的知识库...[/magenta]")
+                await dreamer.dream(domain)
+            else:
+                console.print(f"\n  [magenta]💤 正在进入深层梦境，整理全部站点的知识库...[/magenta]")
+                await dreamer.dream_all()
+        except Exception as e:
+            console.print(f"  [bold red]梦境整理失败: {e}[/bold red]")
 
     async def _async_analyze(self, domain: str):
         """手动触发深度分析"""
