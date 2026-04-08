@@ -65,7 +65,7 @@ uv run playwright install chromium
 ### 3. 配置
 ```bash
 cp .env.example .env
-# 编辑 .env 配置你的 OPENAI_API_KEY 或 GEMINI_API_KEY
+# 编辑 .env 配置你的 LLM_API_KEY
 ```
 
 ---

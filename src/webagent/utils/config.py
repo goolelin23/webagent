@@ -34,11 +34,11 @@ _load_env()
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 PROVIDER_DEFAULTS = {
-    # provider → (default_model, env_key_for_api_key, api_base_env_var)
-    "openai":    ("gpt-4o",          "OPENAI_API_KEY",    "OPENAI_API_BASE"),
-    "anthropic": ("claude-sonnet-4-20250514", "ANTHROPIC_API_KEY", None),
-    "gemini":    ("gemini-2.0-flash", "GOOGLE_API_KEY",   None),
-    "qwen":      ("qwen-max",        "QWEN_API_KEY",      "QWEN_API_BASE"),
+    # provider → (default_model, api_base_env_var, default_api_base)
+    "openai":    ("gpt-4o",          "OPENAI_API_BASE", None),
+    "anthropic": ("claude-sonnet-4-20250514", None, None),
+    "gemini":    ("gemini-2.0-flash", None, None),
+    "qwen":      ("qwen-max",        "QWEN_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 }
 
 
@@ -48,11 +48,8 @@ class LLMConfig:
     provider: str = os.getenv("LLM_PROVIDER", "openai")
     model: str = os.getenv("LLM_MODEL", "")  # 空则使用提供商默认值
 
-    # 各提供商 API Key（按需配置一个即可）
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
-    google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
-    qwen_api_key: str = os.getenv("QWEN_API_KEY", "")
+    # 统一 API Key 配置（配合 LLM_PROVIDER 使用）
+    api_key: str = os.getenv("LLM_API_KEY", "")
 
     # 自定义 API Base URL（千问和私有部署需要）
     openai_api_base: str = os.getenv("OPENAI_API_BASE", "")
@@ -77,14 +74,22 @@ class LLMConfig:
 
     @property
     def effective_api_key(self) -> str:
-        """获取当前提供商对应的 API Key"""
-        key_map = {
-            "openai": self.openai_api_key,
-            "anthropic": self.anthropic_api_key,
-            "gemini": self.google_api_key,
-            "qwen": self.qwen_api_key,
-        }
-        return key_map.get(self.provider, "")
+        """获取 API Key"""
+        return self.api_key
+
+    @property
+    def effective_api_base(self) -> str | None:
+        """获取当前提供商对应的 API Base URL"""
+        provider_info = PROVIDER_DEFAULTS.get(self.provider)
+        if not provider_info:
+            return None
+        base_env_var = provider_info[1]
+        default_base = provider_info[2]
+        if base_env_var:
+            env_value = os.getenv(base_env_var, "")
+            if env_value:
+                return env_value
+        return default_base
 
 
 @dataclass
@@ -182,8 +187,9 @@ def get_llm():
             "temperature": config.llm.temperature,
             "max_tokens": config.llm.max_tokens,
         }
-        if config.llm.openai_api_base:
-            kwargs["base_url"] = config.llm.openai_api_base
+        base_url = config.llm.effective_api_base
+        if base_url:
+            kwargs["base_url"] = base_url
         return ChatOpenAI(**kwargs)
 
     # ── Anthropic (Claude) ──
@@ -212,7 +218,7 @@ def get_llm():
         return ChatOpenAI(
             model=model,
             api_key=api_key,
-            base_url=config.llm.qwen_api_base,
+            base_url=config.llm.effective_api_base,
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
         )
@@ -242,8 +248,8 @@ def get_embeddings():
     try:
         from langchain_openai import OpenAIEmbeddings
         # Defaulting to OpenAI Embeddings assuming compatible base_url or OpenAI itself
-        api_key = config.llm.openai_api_key or config.llm.effective_api_key
-        base_url = config.llm.openai_api_base if provider == "openai" else None
+        api_key = config.llm.api_key
+        base_url = config.llm.effective_api_base
         return OpenAIEmbeddings(openai_api_key=api_key, openai_api_base=base_url)
     except Exception as e:
         import logging
