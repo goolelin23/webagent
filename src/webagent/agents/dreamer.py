@@ -17,7 +17,7 @@ from webagent.knowledge.models import SiteKnowledge, LearnedAction
 from webagent.knowledge.store import KnowledgeStore
 from webagent.prompt_engine.templates.jury import DREAM_SUMMARIZE_PROMPT
 from webagent.utils.logger import get_logger, print_agent, print_success, print_warning
-from webagent.utils.config import get_llm
+from webagent.utils.llm import get_llm
 
 logger = get_logger("webagent.agents.dreamer")
 

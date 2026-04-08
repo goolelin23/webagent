@@ -16,7 +16,7 @@ from rich.prompt import Prompt, Confirm
 from rich.markdown import Markdown
 
 from webagent.utils.logger import print_banner, console, setup_logger
-from webagent.utils.config import get_config, get_provider_info, PROVIDER_DEFAULTS
+from webagent.utils.llm import get_provider_info
 
 logger = None
 
@@ -480,22 +480,20 @@ class Commander:
         table = Table(title="📡 支持的 LLM 提供商")
         table.add_column("提供商", style="cyan")
         table.add_column("默认模型")
-        table.add_column(".env Key")
         table.add_column("说明")
 
-        provider_desc = {
-            "openai": "OpenAI GPT 系列",
-            "anthropic": "Anthropic Claude 系列",
-            "gemini": "Google Gemini 系列",
-            "qwen": "阿里云千问/通义 (DashScope)",
+        provider_info = {
+            "openai":    ("gpt-4o",          "OpenAI GPT 系列"),
+            "anthropic": ("claude-sonnet-4-20250514", "Anthropic Claude 系列"),
+            "gemini":    ("gemini-2.0-flash", "Google Gemini 系列"),
+            "qwen":      ("qwen-max",        "阿里云千问/通义 (DashScope)"),
         }
 
-        for name, (default_model, key_env, _) in PROVIDER_DEFAULTS.items():
+        for name, (default_model, desc) in provider_info.items():
             table.add_row(
                 name,
                 default_model,
-                key_env,
-                provider_desc.get(name, ""),
+                desc,
             )
 
         console.print(table)

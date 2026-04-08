@@ -13,7 +13,7 @@ from webagent.knowledge.models import (
     PageSkillDef, WorkflowDef, FormInfo,
 )
 from webagent.utils.logger import get_logger, print_agent, print_success, console
-from webagent.utils.config import get_llm
+from webagent.utils.llm import get_llm
 
 logger = get_logger("webagent.knowledge.deep_analyzer")
 

@@ -22,7 +22,7 @@ from webagent.agents.jury import JuryPanel
 from webagent.prompt_engine.engine import PromptEngine
 from webagent.prompt_engine.templates.explorer import DATA_MOCK_PROMPT, BLOCK_REASONING_PROMPT
 from webagent.utils.logger import get_logger, print_agent, print_success, print_warning, print_error
-from webagent.utils.config import get_config, get_llm
+from webagent.utils.llm import get_config, get_llm
 
 logger = get_logger("webagent.agents.active_learner")
 
@@ -177,7 +177,7 @@ class ActiveLearner:
         jury_reasoning: str = "",
     ):
         """将成功操作沉淀到知识库"""
-        from webagent.utils.config import get_embeddings
+        from webagent.utils.llm import get_embeddings
         embed_model = get_embeddings()
         try:
             current_embedding = embed_model.embed_query(action.target_description) if embed_model else []
@@ -231,7 +231,7 @@ class ActiveLearner:
 
     def _mark_action_failed(self, site: SiteKnowledge, action: VisionAction, page_url: str = ""):
         """标记一次失败操作"""
-        from webagent.utils.config import get_embeddings
+        from webagent.utils.llm import get_embeddings
         embed_model = get_embeddings()
         try:
             current_embedding = embed_model.embed_query(action.target_description) if embed_model else []

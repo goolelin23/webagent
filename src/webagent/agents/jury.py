@@ -12,7 +12,7 @@ from typing import Any
 
 from webagent.prompt_engine.templates.jury import JURY_REVIEW_PROMPT
 from webagent.utils.logger import get_logger, print_agent, print_success, print_warning
-from webagent.utils.config import get_llm
+from webagent.utils.llm import get_llm
 
 logger = get_logger("webagent.agents.jury")
 

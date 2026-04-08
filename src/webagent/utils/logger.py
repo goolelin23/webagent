@@ -83,7 +83,7 @@ def get_logger(module_name: str = "webagent") -> logging.Logger:
 
 def print_banner():
     """打印系统启动横幅"""
-    from webagent.utils.config import get_provider_info
+    from webagent.utils.llm import get_provider_info
     provider_info = get_provider_info()
 
     banner = f"""
