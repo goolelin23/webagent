@@ -118,6 +118,31 @@ class BlockedPath:
 
 
 @dataclass
+class LearnedAction:
+    """视觉学习到的原子操作 — 每次成功操作都沉淀为一条记录"""
+    action_id: str                  # "click_user_menu"
+    page_url_pattern: str           # 可模糊匹配的 URL 片段
+    action_type: str                # click, fill, scroll, select, hover
+    description: str                # "点击左侧导航栏的用户管理"
+    coordinates: dict = field(default_factory=dict)  # {"x": 120, "y": 340}
+    value: str = ""                 # 填表时的值
+    selector_hint: str = ""         # 可选的CSS选择器提示
+    screenshot_before: str = ""     # 操作前截图路径
+    screenshot_after: str = ""      # 操作后截图路径
+    confidence: float = 1.0         # 成功次数/总执行次数
+    success_count: int = 1
+    total_count: int = 1
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> LearnedAction:
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
 class PageKnowledge:
     """单页面知识"""
     url: str
@@ -284,6 +309,7 @@ class SiteKnowledge:
     deep_analysis: dict | None = field(default=None)               # DeepAnalysis.to_dict()
     state_tree: list[dict] = field(default_factory=list)           # StateNode.to_dict() 列表
     blocked_paths: list[dict] = field(default_factory=list)        # BlockedPath.to_dict() 列表
+    learned_actions: list[dict] = field(default_factory=list)      # LearnedAction.to_dict() 列表
     scan_depth: int = 0
     last_scan: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -357,7 +383,9 @@ class SiteKnowledge:
             f"交互元素: {total_elements}",
             f"表单: {total_forms}",
             f"导航链接: {total_nav}",
+            f"页面技能: {skill_count}",
             f"业务流程: {workflow_count}",
+            f"已学习操作: {len(self.learned_actions)}",
             f"状态节点: {len(self.state_tree)}",
             f"受阻路径: {len(self.blocked_paths)}",
             f"深度分析: {'✅ 已完成' if self.is_analyzed else '❌ 未分析'}",

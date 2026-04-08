@@ -129,8 +129,9 @@ class Commander:
         print_banner()
         console.print("  [dim]输入自然语言指令，或使用以下命令:[/dim]")
         console.print("  [dim]  /scan <url>     — 扫描Web系统（自动深度分析）[/dim]")
-        console.print("  [dim]  /scan-deep <url> — 深度交互扫描（支持造数填表打通链路）[/dim]")
+        console.print("  [dim]  /scan-deep <url> — 👁️ 视觉驱动深度扫描（截图理解+自验证+自愈回退）[/dim]")
         console.print("  [dim]  /resolve <域名>  — 人工接管解决扫描中的阻碍点[/dim]")
+        console.print("  [dim]  /replay <域名>   — 回放已学习的操作路径[/dim]")
         console.print("  [dim]  /analyze <域名>  — 手动触发深度分析[/dim]")
         console.print("  [dim]  /pageskills <域名> — 查看页面技能[/dim]")
         console.print("  [dim]  /export-claw <域名> — 导出为OpenClaw(龙虾)技能包[/dim]")
@@ -176,6 +177,10 @@ class Commander:
                         if not arg:
                             arg = Prompt.ask("  请输入受阻站点域名")
                         asyncio.run(self._async_resolve(arg))
+                    elif cmd == "/replay":
+                        if not arg:
+                            arg = Prompt.ask("  请输入站点域名")
+                        asyncio.run(self._async_replay(arg))
                     elif cmd == "/kb":
                         self._handle_kb_interactive(arg)
                     elif cmd == "/skills":
@@ -338,6 +343,61 @@ class Commander:
             await orchestrator.scan(url, depth, max_pages)
         except Exception as e:
             console.print(f"  [bold red]扫描失败: {e}[/bold red]")
+
+    async def _async_scan_deep(self, url: str):
+        """异步执行视觉驱动深度扫描"""
+        orchestrator = self._get_orchestrator()
+        try:
+            await orchestrator.scan_deep(url)
+        except Exception as e:
+            console.print(f"  [bold red]深度扫描失败: {e}[/bold red]")
+
+    async def _async_resolve(self, domain: str):
+        """异步执行人工解决阻碍"""
+        orchestrator = self._get_orchestrator()
+        try:
+            await orchestrator.resolve_blocked_paths(domain)
+        except Exception as e:
+            console.print(f"  [bold red]解决阻碍失败: {e}[/bold red]")
+
+    async def _async_replay(self, domain: str):
+        """异步回放已学习的操作路径"""
+        orchestrator = self._get_orchestrator()
+        try:
+            site = orchestrator.knowledge_store.load(domain)
+            if not site:
+                console.print(f"  [yellow]未找到站点: {domain}[/yellow]")
+                return
+
+            actions = getattr(site, 'learned_actions', [])
+            if not actions:
+                console.print(f"  [yellow]站点 {domain} 没有已学习的操作记录[/yellow]")
+                return
+
+            from rich.table import Table
+            table = Table(title=f"📚 已学习操作 — {domain} ({len(actions)} 条)")
+            table.add_column("#", style="dim")
+            table.add_column("操作", style="cyan")
+            table.add_column("描述")
+            table.add_column("坐标")
+            table.add_column("置信度", style="green")
+            table.add_column("URL")
+
+            for i, a in enumerate(actions):
+                coords = a.get("coordinates", {})
+                coord_str = f"({coords.get('x',0)}, {coords.get('y',0)})"
+                conf = f"{a.get('confidence', 0):.0%}"
+                table.add_row(
+                    str(i+1),
+                    a.get("action_type", "?"),
+                    a.get("description", ""),
+                    coord_str,
+                    conf,
+                    a.get("page_url_pattern", ""),
+                )
+            console.print(table)
+        except Exception as e:
+            console.print(f"  [bold red]回放失败: {e}[/bold red]")
 
     async def _async_analyze(self, domain: str):
         """手动触发深度分析"""

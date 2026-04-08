@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Any
 from datetime import datetime
@@ -217,6 +218,39 @@ class ActionPipeline:
 
         elif action == "press":
             await self.page.keyboard.press(value or "Enter")
+
+        elif action == "click_xy":
+            # 视觉坐标点击
+            coords = json.loads(target) if isinstance(target, str) else target
+            x, y = int(coords.get("x", 0)), int(coords.get("y", 0))
+            await self.page.mouse.click(x, y)
+            await asyncio.sleep(0.5)
+
+        elif action == "scroll_to_find":
+            # 持续滚动 + 视觉查找
+            max_scrolls = 10
+            for _ in range(max_scrolls):
+                try:
+                    locator = self.page.locator(target)
+                    if await locator.count() > 0 and await locator.first.is_visible():
+                        await locator.first.scroll_into_view_if_needed()
+                        break
+                except Exception:
+                    pass
+                await self.page.evaluate("window.scrollBy(0, 300)")
+                await asyncio.sleep(0.5)
+
+        elif action == "vision_fill":
+            # 视觉填写：基于坐标点击输入框再输入
+            coords = json.loads(target) if isinstance(target, str) else target
+            x, y = int(coords.get("x", 0)), int(coords.get("y", 0))
+            await self.page.mouse.click(x, y)
+            await asyncio.sleep(0.3)
+            await self.page.keyboard.press("Control+a")
+            await self.page.keyboard.type(value, delay=30)
+
+        elif action == "back":
+            await self.page.go_back(wait_until="domcontentloaded", timeout=timeout)
 
         else:
             raise ValueError(f"不支持的操作类型: {action}")
