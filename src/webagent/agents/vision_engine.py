@@ -164,26 +164,36 @@ JS_SCAN_NEARBY = """
 """
 
 JS_DRAW_SOM = """
-() => {
+(params) => {
+    const prefix = params && params.prefix ? params.prefix : '';
     let som_idx = 1;
     window.__som_nodes__ = window.__som_nodes__ || [];
-    if(window.__som_nodes__.length > 0) return {}; // already drawn
+    if(window.__som_nodes__.length > 0) return {}; 
     const som_data = {};
-    const elements = document.querySelectorAll(
-        'button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [tabindex]:not([tabindex="-1"]), .button, .btn'
-    );
-    for (const el of elements) {
+    
+    // Deep search including Shadow DOM
+    const elementsToMark = new Set();
+    const traverse = (root) => {
+        if (!root || !root.querySelectorAll) return;
+        const els = root.querySelectorAll('button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [tabindex]:not([tabindex="-1"]), .button, .btn');
+        els.forEach(e => elementsToMark.add(e));
+        const all = root.querySelectorAll('*');
+        for (const el of all) {
+            if (el.shadowRoot) traverse(el.shadowRoot);
+        }
+    };
+    traverse(document);
+
+    for (const el of elementsToMark) {
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0 || rect.top < 0 || rect.left < 0) continue;
+        if (rect.width < 10 || rect.height < 10) continue;
+        if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+        
         const style = window.getComputedStyle(el);
         if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
 
-        const idStr = String(som_idx++);
+        const idStr = prefix + String(som_idx++);
         el.setAttribute('data-som-id', idStr);
-        som_data[idStr] = {
-            tag: el.tagName.toLowerCase(),
-            text: (el.textContent || '').trim().substring(0, 30)
-        };
 
         const badge = document.createElement('div');
         badge.textContent = idStr;
@@ -195,17 +205,37 @@ JS_DRAW_SOM = """
         badge.style.padding = '1px 4px';
         badge.style.fontSize = '12px';
         badge.style.fontWeight = 'bold';
-        badge.style.zIndex = '999999';
+        badge.style.zIndex = '2147483647';
         badge.style.pointerEvents = 'none';
         badge.style.borderRadius = '3px';
         badge.style.border = '1px solid white';
         
-        document.body.appendChild(badge);
+        if (document.body) document.body.appendChild(badge);
         window.__som_nodes__.push(badge);
     }
     return som_data;
 }
 """
+
+JS_DOM_STABLE_PROBE = """
+() => {
+    if (window.__mutation_observer_active) return;
+    window.__is_stable = true;
+    let timeoutId;
+    const observer = new MutationObserver(() => {
+        window.__is_stable = false;
+        clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => {
+            window.__is_stable = true;
+        }, 500);
+    });
+    if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+        window.__mutation_observer_active = true;
+    }
+}
+"""
+
 
 JS_CLEAR_SOM = """
 () => {
@@ -234,6 +264,7 @@ class VisionAction:
     dead_end_reason: str = ""
     selector_hint: str = "" # CSS 选择器提示（精修后可能获得）
     element_id: str = ""    # SOM 标记的独立ID，优先于坐标
+    risk_level: str = "safe" # safe | dangerous
 
 
 @dataclass
@@ -276,7 +307,12 @@ class VisionEngine:
         
         if draw_som:
             try:
-                await page.evaluate(JS_DRAW_SOM)
+                for idx, frame in enumerate(page.frames):
+                    try:
+                        prefix = "" if idx == 0 else f"{idx}_"
+                        await frame.evaluate(JS_DRAW_SOM, {"prefix": prefix})
+                    except Exception:
+                        pass
                 await asyncio.sleep(0.1) # render tick
             except Exception as e:
                 logger.debug(f"Draw SOM 失败: {e}")
@@ -285,7 +321,11 @@ class VisionEngine:
 
         if draw_som:
             try:
-                await page.evaluate(JS_CLEAR_SOM)
+                for frame in page.frames:
+                    try:
+                        await frame.evaluate(JS_CLEAR_SOM)
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.debug(f"Clear SOM 失败: {e}")
 
@@ -571,6 +611,7 @@ class VisionEngine:
                     dead_end_reason=data.get("dead_end_reason", ""),
                     selector_hint=na.get("selector_hint", ""),
                     element_id=str(na.get("element_id", "")),
+                    risk_level=na.get("risk_level", "safe"),
                 )
         except Exception as e:
             logger.warning(f"视觉感知失败: {e}")
@@ -672,8 +713,16 @@ class VisionEngine:
         # 尝试通过 Playwright Load State 代替硬编码的 sleep
         async def robust_wait(pg: Page):
             try:
-                await pg.wait_for_load_state("networkidle", timeout=2000)
-            except:
+                # 注入安定探针
+                for frame in pg.frames:
+                    try:
+                        await frame.evaluate(JS_DOM_STABLE_PROBE)
+                    except Exception:
+                        pass
+                # 等待主界面标志位为 true
+                await pg.wait_for_function("window.__is_stable === true", timeout=4000)
+            except Exception:
+                # 降级：如果探测器失效或超时，稍微等待
                 await asyncio.sleep(0.5)
 
         # 优先使用 SOM ID 进行绝对精确点击

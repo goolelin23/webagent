@@ -232,3 +232,20 @@ def get_provider_info() -> str:
     model = config.llm.effective_model
     has_key = "✅" if config.llm.effective_api_key else "❌"
     return f"{provider} / {model} {has_key}"
+
+
+def get_embeddings():
+    """获取文本嵌入模型用于语义检索库"""
+    config = get_config()
+    provider = config.llm.provider
+    
+    try:
+        from langchain_openai import OpenAIEmbeddings
+        # Defaulting to OpenAI Embeddings assuming compatible base_url or OpenAI itself
+        api_key = config.llm.openai_api_key or config.llm.effective_api_key
+        base_url = config.llm.openai_api_base if provider == "openai" else None
+        return OpenAIEmbeddings(openai_api_key=api_key, openai_api_base=base_url)
+    except Exception as e:
+        import logging
+        logging.warning(f"无法初始化Embedding模型: {e}。检索将回退无向量模式。")
+        return None

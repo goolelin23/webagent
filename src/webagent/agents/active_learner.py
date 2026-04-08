@@ -157,6 +157,15 @@ class ActiveLearner:
     # 知识沉淀
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    def _compute_cosine_similarity(self, v1, v2):
+        import math
+        if not v1 or not v2 or len(v1) != len(v2): return 0.0
+        dot = sum(a*b for a, b in zip(v1, v2))
+        norm_a = math.sqrt(sum(a*a for a in v1))
+        norm_b = math.sqrt(sum(b*b for b in v2))
+        if norm_a == 0 or norm_b == 0: return 0.0
+        return dot / (norm_a * norm_b)
+
     def _learn_action(
         self,
         site: SiteKnowledge,
@@ -168,14 +177,29 @@ class ActiveLearner:
         jury_reasoning: str = "",
     ):
         """将成功操作沉淀到知识库"""
-        import difflib
+        from webagent.utils.config import get_embeddings
+        embed_model = get_embeddings()
+        try:
+            current_embedding = embed_model.embed_query(action.target_description) if embed_model else []
+        except Exception:
+            current_embedding = []
+
         action_id = f"{action.action_type}_{hashlib.md5(action.target_description.encode()).hexdigest()[:8]}"
 
         # 检查是否已有相同操作 (Semantic / Fuzzy Matching)
         for existing in site.learned_actions:
             if existing.get("page_url_pattern") == page_url.split("?")[0] and existing.get("action_type") == action.action_type:
-                sim = difflib.SequenceMatcher(None, existing.get("description", ""), action.target_description).ratio()
-                if sim > 0.8:
+                match_found = False
+                existing_emb = existing.get("semantic_embedding", [])
+                if existing_emb and current_embedding:
+                    sim = self._compute_cosine_similarity(existing_emb, current_embedding)
+                    if sim > 0.85: match_found = True
+                else:
+                    import difflib
+                    sim = difflib.SequenceMatcher(None, existing.get("description", ""), action.target_description).ratio()
+                    if sim > 0.8: match_found = True
+
+                if match_found:
                     # 更新置信度
                     existing["success_count"] = existing.get("success_count", 0) + 1
                     existing["total_count"] = existing.get("total_count", 0) + 1
@@ -197,6 +221,9 @@ class ActiveLearner:
             jury_score=jury_score,
             jury_reasoning=jury_reasoning,
         )
+        if current_embedding:
+            learned.semantic_embedding = current_embedding
+            
         if getattr(action, 'element_id', None):
             learned.element_id = action.element_id
         site.learned_actions.append(learned.to_dict())
@@ -204,11 +231,26 @@ class ActiveLearner:
 
     def _mark_action_failed(self, site: SiteKnowledge, action: VisionAction, page_url: str = ""):
         """标记一次失败操作"""
-        import difflib
+        from webagent.utils.config import get_embeddings
+        embed_model = get_embeddings()
+        try:
+            current_embedding = embed_model.embed_query(action.target_description) if embed_model else []
+        except Exception:
+            current_embedding = []
+
         for existing in site.learned_actions:
              if existing.get("page_url_pattern") == page_url.split("?")[0] and existing.get("action_type") == action.action_type:
-                 sim = difflib.SequenceMatcher(None, existing.get("description", ""), action.target_description).ratio()
-                 if sim > 0.8:
+                 match_found = False
+                 existing_emb = existing.get("semantic_embedding", [])
+                 if existing_emb and current_embedding:
+                     sim = self._compute_cosine_similarity(existing_emb, current_embedding)
+                     if sim > 0.85: match_found = True
+                 else:
+                     import difflib
+                     sim = difflib.SequenceMatcher(None, existing.get("description", ""), action.target_description).ratio()
+                     if sim > 0.8: match_found = True
+
+                 if match_found:
                      existing["total_count"] = existing.get("total_count", 0) + 1
                      existing["confidence"] = existing.get("success_count", 0) / existing["total_count"]
                      return
@@ -282,7 +324,13 @@ class ActiveLearner:
 
             # 3. 死胡同检测
             if vision_action.is_dead_end:
-                print_warning(f"  🚫 死胡同: {vision_action.dead_end_reason}")
+                print_agent("active_learner", f"  🚫 到达死胡同: {vision_action.dead_end_reason}")
+                break
+
+            # 3.1 沙盒危险隔离检测
+            if getattr(vision_action, 'risk_level', 'safe') == 'dangerous':
+                print_agent("active_learner", f"  ⛔ 危险操作拦截: {vision_action.target_description} (被判定为危险的写操作)")
+                action_history.append(f"[受阻] {vision_action.target_description} — (由沙盒协议拦截)")
                 break
 
             action_desc = f"{vision_action.action_type} → {vision_action.target_description}"
