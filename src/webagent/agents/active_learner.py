@@ -336,8 +336,9 @@ class ActiveLearner:
             action_desc = f"{vision_action.action_type} → {vision_action.target_description}"
             print_agent("active_learner", f"  🎯 决策: {action_desc} (坐标: {vision_action.coordinates})")
 
-            # 4. 操作前截图（用于验证对比）
+            # 4. 操作前截图（用于验证对比）+ 页面快照指纹
             screenshot_before = await self.vision._screenshot(page, "before")
+            page_snapshot_before = await self.vision.get_page_snapshot(page)
 
             # 5. 执行操作
             exec_success = await self.vision.execute_vision_action(page, vision_action)
@@ -351,13 +352,26 @@ class ActiveLearner:
                     break
                 continue
 
-            # 6. 等待页面响应
-            await asyncio.sleep(1)
+            # 6. 等待页面响应（使用智能等待代替 sleep(1)）
+            from webagent.agents.vision_engine import VisionEngine
+            await VisionEngine._wait_stable(page)
 
-            # 7. 视觉验证
-            verify_result, screenshot_after = await self.vision.verify(
-                page, screenshot_before, action_desc
+            # 7. 快速验证（优先，无需 LLM 调用）
+            verify_result = await self.vision.quick_verify(
+                page, page_snapshot_before, action_desc
             )
+            screenshot_after = ""
+
+            # 如果快速验证不确定，才回退到 LLM 验证
+            if verify_result is None:
+                logger.debug(f"快速验证不确定，回退到 LLM 验证: {action_desc}")
+                verify_result, screenshot_after = await self.vision.verify(
+                    page, screenshot_before, action_desc
+                )
+            else:
+                # 快速验证有结果时，只在需要时截图
+                if verify_result.success:
+                    screenshot_after = await self.vision._screenshot(page, "after")
 
             if verify_result.success:
                 print_success(f"  ✅ 验证通过: {verify_result.change_description}")
@@ -365,33 +379,50 @@ class ActiveLearner:
                 successful_actions.append(vision_action)
                 consecutive_failures = 0
 
-                # 8. 陪审团评审
-                verdict = await self.jury.review_action(
-                    action_type=vision_action.action_type,
-                    action_description=vision_action.target_description,
-                    coordinates=vision_action.coordinates,
-                    selector_hint=vision_action.selector_hint,
-                    page_url=page.url,
-                    page_change=verify_result.change_description,
-                    exploration_goal=goal,
-                    learned_count=len(site.learned_actions),
-                    step_number=step + 1,
+                # 8. 陪审团评审（优化：简单操作跳过评审）
+                # 对菜单点击、滚动等低风险操作跳过 jury，节省 LLM 调用
+                simple_actions = {"scroll_down", "scroll_up", "hover"}
+                skip_jury = (
+                    vision_action.action_type in simple_actions
+                    or (vision_action.action_type == "click" and step < 3)  # 前3步的点击跳过评审
                 )
 
-                if verdict.approved:
-                    # 9. 通过评审 → 沉淀到知识库
+                if skip_jury:
+                    # 直接沉淀，给默认评分
                     self._learn_action(
                         site, vision_action,
-                        screenshot_before, screenshot_after,
+                        screenshot_before, screenshot_after or "",
                         page.url,
-                        jury_score=verdict.average_score,
-                        jury_reasoning=verdict.summary,
+                        jury_score=7.0,
+                        jury_reasoning="简单操作自动通过",
                     )
                 else:
-                    print_warning(
-                        f"  ❌ 陪审团否决 ({verdict.average_score:.1f}分): {verdict.summary}"
+                    verdict = await self.jury.review_action(
+                        action_type=vision_action.action_type,
+                        action_description=vision_action.target_description,
+                        coordinates=vision_action.coordinates,
+                        selector_hint=vision_action.selector_hint,
+                        page_url=page.url,
+                        page_change=verify_result.change_description,
+                        exploration_goal=goal,
+                        learned_count=len(site.learned_actions),
+                        step_number=step + 1,
                     )
-                    action_history.append(f"[否决] {action_desc} — {verdict.summary}")
+
+                    if verdict.approved:
+                        # 9. 通过评审 → 沉淀到知识库
+                        self._learn_action(
+                            site, vision_action,
+                            screenshot_before, screenshot_after or "",
+                            page.url,
+                            jury_score=verdict.average_score,
+                            jury_reasoning=verdict.summary,
+                        )
+                    else:
+                        print_warning(
+                            f"  ❌ 陪审团否决 ({verdict.average_score:.1f}分): {verdict.summary}"
+                        )
+                        action_history.append(f"[否决] {action_desc} — {verdict.summary}")
 
                 # 如果页面发生了导航变化，可能需要递归探索
                 if verify_result.page_changed and page.url != snapshot["url"]:
@@ -481,7 +512,7 @@ class ActiveLearner:
 
                 try:
                     await page.goto(current_url, wait_until="domcontentloaded", timeout=15000)
-                    await asyncio.sleep(1.5)
+                    await VisionEngine._wait_stable(page)
                 except Exception as e:
                     logger.warning(f"无法导航到 {current_url}: {e}")
                     continue

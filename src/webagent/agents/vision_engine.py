@@ -7,6 +7,7 @@
 from __future__ import annotations
 import asyncio
 import base64
+import io
 import json
 import time
 import re
@@ -171,48 +172,46 @@ JS_DRAW_SOM = """
     if(window.__som_nodes__.length > 0) return {}; 
     const som_data = {};
     
-    // Deep search including Shadow DOM
+    // 性能优化：只查询交互元素选择器，不再 querySelectorAll('*')
+    // Shadow DOM 限制最多 2 层深度
+    const INTERACTIVE_SELECTOR = 'button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [tabindex]:not([tabindex="-1"]), .button, .btn';
     const elementsToMark = new Set();
-    const traverse = (root) => {
-        if (!root || !root.querySelectorAll) return;
-        const els = root.querySelectorAll('button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [tabindex]:not([tabindex="-1"]), .button, .btn');
+    const traverse = (root, depth) => {
+        if (!root || !root.querySelectorAll || depth > 2) return;
+        const els = root.querySelectorAll(INTERACTIVE_SELECTOR);
         els.forEach(e => elementsToMark.add(e));
-        const all = root.querySelectorAll('*');
-        for (const el of all) {
-            if (el.shadowRoot) traverse(el.shadowRoot);
+        // 只对含 shadowRoot 的交互容器进入，不遍历全部 '*'
+        const containers = root.querySelectorAll('[shadow], [data-shadow]');
+        for (const el of containers) {
+            if (el.shadowRoot) traverse(el.shadowRoot, depth + 1);
         }
     };
-    traverse(document);
+    traverse(document, 0);
+
+    // 批量创建 fragment 减少 DOM reflow
+    const fragment = document.createDocumentFragment();
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
 
     for (const el of elementsToMark) {
         const rect = el.getBoundingClientRect();
         if (rect.width < 10 || rect.height < 10) continue;
-        if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+        if (rect.bottom < 0 || rect.right < 0 || rect.top > vh || rect.left > vw) continue;
         
-        const style = window.getComputedStyle(el);
-        if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
+        // 使用 offsetParent 快速判断可见性，避免 getComputedStyle
+        if (el.offsetParent === null && el.tagName.toLowerCase() !== 'body') continue;
 
         const idStr = prefix + String(som_idx++);
         el.setAttribute('data-som-id', idStr);
 
         const badge = document.createElement('div');
         badge.textContent = idStr;
-        badge.style.position = 'absolute';
-        badge.style.top = `${rect.top + window.scrollY}px`;
-        badge.style.left = `${rect.left + window.scrollX}px`;
-        badge.style.backgroundColor = 'red';
-        badge.style.color = 'white';
-        badge.style.padding = '1px 4px';
-        badge.style.fontSize = '12px';
-        badge.style.fontWeight = 'bold';
-        badge.style.zIndex = '2147483647';
-        badge.style.pointerEvents = 'none';
-        badge.style.borderRadius = '3px';
-        badge.style.border = '1px solid white';
+        badge.style.cssText = `position:absolute;top:${rect.top + window.scrollY}px;left:${rect.left + window.scrollX}px;background:red;color:white;padding:1px 4px;font-size:12px;font-weight:bold;z-index:2147483647;pointer-events:none;border-radius:3px;border:1px solid white`;
         
-        if (document.body) document.body.appendChild(badge);
+        fragment.appendChild(badge);
         window.__som_nodes__.push(badge);
     }
+    if (document.body) document.body.appendChild(fragment);
     return som_data;
 }
 """
@@ -227,10 +226,10 @@ JS_DOM_STABLE_PROBE = """
         clearTimeout(timeoutId);
         timeoutId = setTimeout(() => {
             window.__is_stable = true;
-        }, 500);
+        }, 300);
     });
     if (document.body) {
-        observer.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+        observer.observe(document.body, { childList: true, subtree: true, attributes: true });
         window.__mutation_observer_active = true;
     }
 }
@@ -299,11 +298,31 @@ class VisionEngine:
             self.llm = get_llm()
         return self.llm
 
+    @staticmethod
+    async def _wait_stable(page: Page, timeout: int = 3000):
+        """智能等待页面 DOM 稳定，代替硬编码 sleep"""
+        try:
+            # 注入稳定探针（幂等）
+            for frame in page.frames:
+                try:
+                    await frame.evaluate(JS_DOM_STABLE_PROBE)
+                except Exception:
+                    pass
+            # 等待 DOM 稳定标志位
+            await page.wait_for_function("window.__is_stable === true", timeout=timeout)
+        except Exception:
+            # 降级：最短等待
+            await asyncio.sleep(0.3)
+
+    # ── 截图压缩参数 ──
+    SCREENSHOT_QUALITY = 70       # JPEG 质量 (1-100)
+    SCREENSHOT_MAX_WIDTH = 1024   # 最大宽度像素
+
     async def _screenshot(self, page: Page, label: str = "", draw_som: bool = False) -> str:
-        """截图并返回文件路径。如果开启 draw_som，则会在截图前先叠加数字标识标签"""
+        """截图并返回压缩后的 JPEG 文件路径。如果开启 draw_som，则会在截图前先叠加数字标识标签"""
         ts = int(time.time() * 1000)
-        filename = f"{label}_{ts}.png" if label else f"screenshot_{ts}.png"
-        path = self.screenshots_dir / filename
+        png_filename = f"{label}_{ts}.png" if label else f"screenshot_{ts}.png"
+        png_path = self.screenshots_dir / png_filename
         
         if draw_som:
             try:
@@ -313,11 +332,15 @@ class VisionEngine:
                         await frame.evaluate(JS_DRAW_SOM, {"prefix": prefix})
                     except Exception:
                         pass
-                await asyncio.sleep(0.1) # render tick
+                # 用 requestAnimationFrame 等待渲染完成，代替固定 sleep
+                try:
+                    await page.evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+                except Exception:
+                    await asyncio.sleep(0.05)
             except Exception as e:
                 logger.debug(f"Draw SOM 失败: {e}")
 
-        await page.screenshot(path=str(path), full_page=False)
+        await page.screenshot(path=str(png_path), full_page=False)
 
         if draw_som:
             try:
@@ -329,7 +352,42 @@ class VisionEngine:
             except Exception as e:
                 logger.debug(f"Clear SOM 失败: {e}")
 
-        return str(path)
+        # ── PNG → 压缩 JPEG（减少 5~10 倍体积）──
+        jpeg_path = self._compress_screenshot(str(png_path))
+        return jpeg_path
+
+    def _compress_screenshot(self, png_path: str) -> str:
+        """将 PNG 截图压缩为 JPEG 并缩放到合理尺寸"""
+        try:
+            from PIL import Image
+            img = Image.open(png_path)
+
+            # 缩放到 max_width
+            if img.width > self.SCREENSHOT_MAX_WIDTH:
+                ratio = self.SCREENSHOT_MAX_WIDTH / img.width
+                new_size = (self.SCREENSHOT_MAX_WIDTH, int(img.height * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+
+            # 转 RGB（JPEG 不支持 RGBA）
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+
+            jpeg_path = png_path.replace('.png', '.jpg')
+            img.save(jpeg_path, 'JPEG', quality=self.SCREENSHOT_QUALITY, optimize=True)
+
+            # 删除原始 PNG 节省磁盘空间
+            try:
+                Path(png_path).unlink()
+            except Exception:
+                pass
+
+            return jpeg_path
+        except ImportError:
+            logger.debug("Pillow 未安装，使用原始 PNG")
+            return png_path
+        except Exception as e:
+            logger.debug(f"截图压缩失败: {e}")
+            return png_path
 
     def _image_to_base64(self, image_path: str) -> str:
         """将截图转为 base64"""
@@ -345,10 +403,12 @@ class VisionEngine:
         content = []
         for img_path in image_paths:
             b64 = self._image_to_base64(img_path)
+            # 自动检测图片格式
+            mime = "image/jpeg" if img_path.endswith(".jpg") else "image/png"
             content.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/png;base64,{b64}",
+                    "url": f"data:{mime};base64,{b64}",
                 },
             })
         content.append({
@@ -624,13 +684,90 @@ class VisionEngine:
             dead_end_reason=f"视觉感知异常",
         )
 
+    async def quick_verify(
+        self,
+        page: Page,
+        snapshot_before: dict,
+        action_description: str,
+    ) -> VerifyResult | None:
+        """
+        轻量级快速验证：基于 URL 变化和 DOM 内容变化快速判断操作是否生效。
+        无需 LLM 调用。返回 None 表示不确定，需要回退到 LLM verify。
+        """
+        try:
+            url_changed = page.url != snapshot_before.get("url", "")
+            title = await page.title()
+            title_changed = title != snapshot_before.get("title", "")
+
+            # 快速 DOM 内容指纹：文本长度 + 可见元素数量
+            content_hash = await page.evaluate("""
+                () => {
+                    const text_len = (document.body.innerText || '').length;
+                    const elements = document.querySelectorAll('button, a, input, select, textarea');
+                    return text_len * 1000 + elements.length;
+                }
+            """)
+            content_changed = content_hash != snapshot_before.get("content_hash", 0)
+
+            # 检查是否有错误弹窗
+            has_error = await page.evaluate("""
+                () => {
+                    const errorSels = '.ant-message-error, .el-message--error, .alert-danger, .error-message, .toast-error';
+                    const el = document.querySelector(errorSels);
+                    return el ? el.textContent.trim().substring(0, 100) : '';
+                }
+            """)
+            if has_error:
+                return VerifyResult(
+                    success=False, page_changed=False,
+                    change_description=f"检测到错误: {has_error}",
+                    error_detected=True, error_message=has_error,
+                )
+
+            if url_changed or title_changed or content_changed:
+                change_desc = []
+                if url_changed:
+                    change_desc.append(f"URL→{page.url}")
+                if title_changed:
+                    change_desc.append(f"标题→{title}")
+                if content_changed:
+                    change_desc.append("内容已变化")
+                return VerifyResult(
+                    success=True, page_changed=url_changed,
+                    change_description="; ".join(change_desc),
+                )
+
+            # 无变化 → 不确定，返回 None 让调用方决定是否用 LLM verify
+            return None
+        except Exception as e:
+            logger.debug(f"快速验证异常: {e}")
+            return None
+
+    async def get_page_snapshot(self, page: Page) -> dict:
+        """获取页面快照指纹，用于 quick_verify 对比"""
+        try:
+            content_hash = await page.evaluate("""
+                () => {
+                    const text_len = (document.body.innerText || '').length;
+                    const elements = document.querySelectorAll('button, a, input, select, textarea');
+                    return text_len * 1000 + elements.length;
+                }
+            """)
+            return {
+                "url": page.url,
+                "title": await page.title(),
+                "content_hash": content_hash,
+            }
+        except Exception:
+            return {"url": page.url, "title": "", "content_hash": 0}
+
     async def verify(
         self,
         page: Page,
         screenshot_before: str,
         action_description: str,
     ) -> tuple[VerifyResult, str]:
-        """验证：对比操作前后截图，判断操作是否成功"""
+        """验证：对比操作前后截图，判断操作是否成功（LLM 版本，较慢）"""
         screenshot_after = await self._screenshot(page, "verify")
         print_agent("vision", f"📸 验证截图: {screenshot_after}")
 
@@ -710,20 +847,9 @@ class VisionEngine:
             return False
 
         # 对需要精准定位的操作，先执行坐标精修
-        # 尝试通过 Playwright Load State 代替硬编码的 sleep
+        # 使用 DOM 稳定探针代替硬编码 sleep
         async def robust_wait(pg: Page):
-            try:
-                # 注入安定探针
-                for frame in pg.frames:
-                    try:
-                        await frame.evaluate(JS_DOM_STABLE_PROBE)
-                    except Exception:
-                        pass
-                # 等待主界面标志位为 true
-                await pg.wait_for_function("window.__is_stable === true", timeout=4000)
-            except Exception:
-                # 降级：如果探测器失效或超时，稍微等待
-                await asyncio.sleep(0.5)
+            await VisionEngine._wait_stable(pg)
 
         # 优先使用 SOM ID 进行绝对精确点击
         selector = ""
@@ -766,7 +892,6 @@ class VisionEngine:
 
             elif action_type == "hover":
                 await page.mouse.move(x, y)
-                await asyncio.sleep(0.1)
                 return True
 
             elif action_type == "fill":
@@ -779,7 +904,7 @@ class VisionEngine:
                 click_ok = await self._smart_click(page, x, y, selector)
                 if not click_ok:
                     return False
-                await asyncio.sleep(0.5)
+                await robust_wait(page)
 
                 if action.value:
                     # 尝试在展开的列表中找到目标选项
@@ -801,12 +926,12 @@ class VisionEngine:
                     """)
                     if found_option:
                         print_agent("vision", f"  ✅ 下拉选项定位成功: {action.value}")
-                        await asyncio.sleep(0.3)
+                        await robust_wait(page)
                         return True
 
                     # 兜底：键盘输入搜索
-                    await page.keyboard.type(action.value, delay=50)
-                    await asyncio.sleep(0.3)
+                    await page.keyboard.type(action.value, delay=30)
+                    await robust_wait(page)
                     await page.keyboard.press("Enter")
                     await robust_wait(page)
 
@@ -814,12 +939,12 @@ class VisionEngine:
 
             elif action_type == "scroll_down":
                 await page.mouse.wheel(0, 300)
-                await asyncio.sleep(0.2)
+                await robust_wait(page)
                 return True
 
             elif action_type == "scroll_up":
                 await page.mouse.wheel(0, -300)
-                await asyncio.sleep(0.2)
+                await robust_wait(page)
                 return True
 
             else:

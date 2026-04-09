@@ -203,7 +203,8 @@ class ExplorerAgent:
 
                 try:
                     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    await asyncio.sleep(1)  # 等待动态内容加载
+                    from webagent.agents.vision_engine import VisionEngine
+                    await VisionEngine._wait_stable(page)
 
                     # 提取页面知识
                     page_knowledge = await self._extract_page_knowledge(page, url)
@@ -473,7 +474,8 @@ class ExplorerAgent:
 
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(1)
+                from webagent.agents.vision_engine import VisionEngine
+                await VisionEngine._wait_stable(page)
                 knowledge = await self._extract_page_knowledge(page, url)
                 print_success(f"页面扫描完成: {knowledge.title}")
                 return knowledge

@@ -106,6 +106,12 @@ class AppConfig:
         return p
 
 
+_config_instance: AppConfig | None = None
+
+
 def get_config() -> AppConfig:
-    """获取全局配置单例"""
-    return AppConfig()
+    """获取全局配置单例（缓存）"""
+    global _config_instance
+    if _config_instance is None:
+        _config_instance = AppConfig()
+    return _config_instance

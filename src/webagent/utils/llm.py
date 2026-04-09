@@ -8,9 +8,12 @@ from langchain_core.language_models import BaseChatModel
 from webagent.utils.config import get_config
 
 
+_llm_instance: BaseChatModel | None = None
+
+
 def get_llm() -> BaseChatModel:
     """
-    根据配置创建 LLM 实例（统一工厂方法）
+    根据配置创建 LLM 实例（单例缓存）
 
     支持的 LLM_PROVIDER 值:
       - openai     → ChatOpenAI (GPT-4o, GPT-4 等)
@@ -18,6 +21,10 @@ def get_llm() -> BaseChatModel:
       - gemini     → ChatGoogleGenerativeAI (Gemini 系列)
       - qwen       → ChatQwen (千问系列)
     """
+    global _llm_instance
+    if _llm_instance is not None:
+        return _llm_instance
+
     config = get_config()
     provider = config.llm.provider.lower()
 
@@ -36,11 +43,11 @@ def get_llm() -> BaseChatModel:
             "max_tokens": config.llm.max_tokens,
         }
         kwargs["base_url"] = "https://api.openai.com/v1"
-        return ChatOpenAI(**kwargs)
+        _llm_instance = ChatOpenAI(**kwargs)
 
     elif provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(
+        _llm_instance = ChatAnthropic(
             model=config.llm.model,
             api_key=config.llm.api_key,
             temperature=config.llm.temperature,
@@ -49,7 +56,7 @@ def get_llm() -> BaseChatModel:
 
     elif provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
+        _llm_instance = ChatGoogleGenerativeAI(
             model=config.llm.model,
             google_api_key=config.llm.api_key,
             temperature=config.llm.temperature,
@@ -58,7 +65,7 @@ def get_llm() -> BaseChatModel:
 
     elif provider == "qwen":
         from langchain_qwq import ChatQwen
-        return ChatQwen(
+        _llm_instance = ChatQwen(
             model=config.llm.model,
             api_key=config.llm.api_key,
             temperature=config.llm.temperature,
@@ -70,6 +77,8 @@ def get_llm() -> BaseChatModel:
             f"不支持的 LLM 提供商: {provider}\n"
             f"支持的提供商: openai, anthropic, gemini, qwen"
         )
+
+    return _llm_instance
 
 
 def get_provider_info() -> str:

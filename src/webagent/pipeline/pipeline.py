@@ -224,7 +224,8 @@ class ActionPipeline:
             coords = json.loads(target) if isinstance(target, str) else target
             x, y = int(coords.get("x", 0)), int(coords.get("y", 0))
             await self.page.mouse.click(x, y)
-            await asyncio.sleep(0.5)
+            from webagent.agents.vision_engine import VisionEngine
+            await VisionEngine._wait_stable(self.page)
 
         elif action == "scroll_to_find":
             # 持续滚动 + 视觉查找
@@ -238,14 +239,16 @@ class ActionPipeline:
                 except Exception:
                     pass
                 await self.page.evaluate("window.scrollBy(0, 300)")
-                await asyncio.sleep(0.5)
+                from webagent.agents.vision_engine import VisionEngine
+                await VisionEngine._wait_stable(self.page)
 
         elif action == "vision_fill":
             # 视觉填写：基于坐标点击输入框再输入
             coords = json.loads(target) if isinstance(target, str) else target
             x, y = int(coords.get("x", 0)), int(coords.get("y", 0))
             await self.page.mouse.click(x, y)
-            await asyncio.sleep(0.3)
+            from webagent.agents.vision_engine import VisionEngine
+            await VisionEngine._wait_stable(self.page)
             await self.page.keyboard.press("Control+a")
             await self.page.keyboard.type(value, delay=30)
 
