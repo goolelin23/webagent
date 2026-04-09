@@ -564,7 +564,8 @@ class VisionEngine:
             try:
                 locator = page.locator(selector)
                 if await locator.count() > 0:
-                    await locator.first.clear()
+                    await locator.first.click(click_count=3, timeout=3000)
+                    await page.keyboard.press("Backspace")
                     await locator.first.fill(value)
                     print_agent("vision", f"  ✅ 选择器填写成功: {selector}")
                     return True
@@ -610,7 +611,8 @@ class VisionEngine:
 
                 if fill_selector:
                     locator = page.locator(fill_selector)
-                    await locator.first.clear()
+                    await locator.first.click(click_count=3, timeout=3000)
+                    await page.keyboard.press("Backspace")
                     await locator.first.fill(value)
                     print_agent("vision", f"  ✅ 精修后填写成功: {fill_selector}")
                     return True
@@ -619,9 +621,9 @@ class VisionEngine:
 
         # 策略3: 坐标点击后键盘输入
         try:
-            await page.mouse.click(x, y)
+            await page.mouse.click(x, y, click_count=3)
             await asyncio.sleep(0.3)
-            await page.keyboard.press("Control+a")
+            await page.keyboard.press("Backspace")
             await page.keyboard.type(value, delay=30)
             return True
         except Exception as e:

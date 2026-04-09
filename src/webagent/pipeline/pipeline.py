@@ -175,7 +175,8 @@ class ActionPipeline:
         elif action == "fill":
             locator = self.page.locator(target)
             await locator.wait_for(state="visible", timeout=timeout)
-            await locator.clear()
+            await locator.click(click_count=3, timeout=timeout)
+            await self.page.keyboard.press("Backspace")
             await locator.fill(value)
 
         elif action == "select":
@@ -246,10 +247,10 @@ class ActionPipeline:
             # 视觉填写：基于坐标点击输入框再输入
             coords = json.loads(target) if isinstance(target, str) else target
             x, y = int(coords.get("x", 0)), int(coords.get("y", 0))
-            await self.page.mouse.click(x, y)
+            await self.page.mouse.click(x, y, click_count=3)
             from webagent.agents.vision_engine import VisionEngine
             await VisionEngine._wait_stable(self.page)
-            await self.page.keyboard.press("Control+a")
+            await self.page.keyboard.press("Backspace")
             await self.page.keyboard.type(value, delay=30)
 
         elif action == "back":
