@@ -1,6 +1,6 @@
 [project]
 name = "webagent"
-version = "0.6.1"
+version = "0.6.2"
 description = "智能Web自动化Agent系统 — 基于视觉驱动 + AI + Playwright的六层架构"
 authors = [
     { name = "goolelin23", email = "coolelin@gmail.com" }
