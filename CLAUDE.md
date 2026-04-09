@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-智能 Web 自动化 Agent 系统 (WebAgent) v0.6.0 — 基于视觉感知 + 多 Agent 陪审团 + 梦境自清理的 Web 自动化操作系统。通过截图理解 (Vision-Driven) 取代传统 DOM 定位，实现接近人类行为的自动化交互。
+智能 Web 自动化 Agent 系统 (WebAgent) v0.6.1 — 基于视觉感知 + 多 Agent 陪审团 + 梦境自清理的 Web 自动化操作系统。v0.6.1 引入了全新的 **Turbo Execution** 引擎，支持截图压缩、智能延迟探测及 OpenClaw 云端/本地模型无缝集成。
 
 ## 常用命令
 
 ```bash
-# 环境同步
+# 环境同步 (v0.6.1 增加了 Pillow 依赖用于截图压缩)
 uv sync
 
 # 安装浏览器
@@ -45,7 +45,7 @@ cp .env.example .env
 # 编辑 .env 设置 ANTHROPIC_API_KEY 或其他提供商 Key
 ```
 
-支持的 LLM 提供商：`openai`, `anthropic`, `gemini`, `qwen`
+支持的 LLM 提供商：`openai`, `anthropic`, `gemini`, `qwen`, `openclaw`
 
 ## 核心架构 (六层)
 
