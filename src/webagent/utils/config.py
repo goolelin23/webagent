@@ -40,6 +40,7 @@ class LLMConfig:
     provider: str = os.getenv("LLM_PROVIDER", "openai")
     model: str = os.getenv("LLM_MODEL", "")  
     api_key: str = os.getenv("LLM_API_KEY", "")
+    base_url: str = os.getenv("LLM_BASE_URL", "")
 
     # 通用参数
     temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
