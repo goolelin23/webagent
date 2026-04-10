@@ -41,11 +41,15 @@ JS_REFINE_COORDINATE = """
 
     const rect = el.getBoundingClientRect();
     const tag = el.tagName.toLowerCase();
-    const isInteractive = ['a', 'button', 'input', 'select', 'textarea', 'label'].includes(tag)
+    const type = el.getAttribute('type') || '';
+    const isInteractive = ['a', 'button', 'input', 'select', 'textarea', 'label', 'svg', 'canvas'].includes(tag)
         || el.getAttribute('role') === 'button'
         || el.getAttribute('role') === 'menuitem'
         || el.getAttribute('role') === 'tab'
         || el.getAttribute('role') === 'link'
+        || type.toLowerCase() === 'submit'
+        || (el.className && typeof el.className === 'string' && (el.className.toLowerCase().includes('login') || el.className.toLowerCase().includes('submit') || el.className.toLowerCase().includes('btn')))
+        || (el.id && (el.id.toLowerCase().includes('login') || el.id.toLowerCase().includes('submit')))
         || el.onclick !== null
         || el.style.cursor === 'pointer'
         || window.getComputedStyle(el).cursor === 'pointer';
@@ -56,9 +60,13 @@ JS_REFINE_COORDINATE = """
         let parent = el.parentElement;
         for (let i = 0; i < 5 && parent; i++) {
             const ptag = parent.tagName.toLowerCase();
-            const pInteractive = ['a', 'button', 'input', 'select', 'textarea'].includes(ptag)
+            const ptype = parent.getAttribute('type') || '';
+            const pInteractive = ['a', 'button', 'input', 'select', 'textarea', 'svg', 'canvas'].includes(ptag)
                 || parent.getAttribute('role') === 'button'
                 || parent.getAttribute('role') === 'menuitem'
+                || ptype.toLowerCase() === 'submit'
+                || (parent.className && typeof parent.className === 'string' && (parent.className.toLowerCase().includes('login') || parent.className.toLowerCase().includes('submit') || parent.className.toLowerCase().includes('btn')))
+                || (parent.id && (parent.id.toLowerCase().includes('login') || parent.id.toLowerCase().includes('submit')))
                 || parent.onclick !== null
                 || window.getComputedStyle(parent).cursor === 'pointer';
             if (pInteractive) {
@@ -126,10 +134,14 @@ JS_SCAN_NEARBY = """
         let found = false;
         for (let node = el; node && node !== document.body; node = node.parentElement) {
             const tag = node.tagName.toLowerCase();
-            if (['a', 'button', 'input', 'select', 'textarea'].includes(tag)
+            const type = node.getAttribute('type') || '';
+            if (['a', 'button', 'input', 'select', 'textarea', 'svg', 'canvas'].includes(tag)
                 || node.getAttribute('role') === 'button'
                 || node.getAttribute('role') === 'menuitem'
                 || node.getAttribute('role') === 'tab'
+                || type.toLowerCase() === 'submit'
+                || (node.className && typeof node.className === 'string' && (node.className.toLowerCase().includes('login') || node.className.toLowerCase().includes('submit') || node.className.toLowerCase().includes('btn')))
+                || (node.id && (node.id.toLowerCase().includes('login') || node.id.toLowerCase().includes('submit')))
                 || node.onclick !== null
                 || window.getComputedStyle(node).cursor === 'pointer') {
                 target = node;
@@ -172,9 +184,9 @@ JS_DRAW_SOM = """
     if(window.__som_nodes__.length > 0) return {}; 
     const som_data = {};
     
-    // 性能优化：只查询交互元素选择器，不再 querySelectorAll('*')
+    // 性能优化：只查询交互元素选择器，增加对于 login/submit 及前端库 svg 的兜底捕捉
     // Shadow DOM 限制最多 2 层深度
-    const INTERACTIVE_SELECTOR = 'button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [tabindex]:not([tabindex="-1"]), .button, .btn';
+    const INTERACTIVE_SELECTOR = 'button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [tabindex]:not([tabindex="-1"]), .button, .btn, [type="submit"], [class*="login" i], [class*="submit" i], [id*="login" i], [id*="submit" i], svg, canvas';
     const elementsToMark = new Set();
     const traverse = (root, depth) => {
         if (!root || !root.querySelectorAll || depth > 2) return;

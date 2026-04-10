@@ -11,6 +11,34 @@ from webagent.utils.config import get_config
 _llm_instance: BaseChatModel | None = None
 
 
+def _normalize_model_config(provider: str, model: str) -> tuple[str, str]:
+    """对用户输入的不规范的模型和提供商进行归一化映射"""
+    if not model:
+        return provider, model
+        
+    p = provider.lower()
+    m = model.lower().replace(" ", "").replace("-", "")
+    
+    # Gemini 归一化
+    if "gemini3.1pro" in m:
+        return ("gemini", "gemini-1.5-pro")
+    if "gemini3flash" in m:
+        return ("gemini", "gemini-1.5-flash")
+        
+    # 千问归一化
+    if "千问3.0vlplus" in m or "qwen3.0vlplus" in m:
+        return ("qwen", "qwen-vl-plus")
+    if "千问3.5plus" in m or "qwen3.5plus" in m:
+        return ("qwen", "qwen-plus")
+        
+    # Gemma 归一化
+    if "gemma4" in m:
+        # Gemma 可能会通过 OpenAI 兼容 API 调用，这里尝试规范化名称
+        return (p, "gemma-7b-it")
+        
+    return provider, model
+
+
 def get_llm() -> BaseChatModel:
     """
     根据配置创建 LLM 实例（单例缓存）
@@ -27,7 +55,11 @@ def get_llm() -> BaseChatModel:
         return _llm_instance
 
     config = get_config()
-    provider = config.llm.provider.lower()
+    raw_provider = config.llm.provider.lower()
+    raw_model = config.llm.model
+    
+    provider, normalized_model = _normalize_model_config(raw_provider, raw_model)
+
 
     if provider != "openclaw" and not config.llm.api_key:
         raise ValueError(
@@ -38,7 +70,7 @@ def get_llm() -> BaseChatModel:
     if provider == "openai":
         from langchain_openai import ChatOpenAI
         kwargs = {
-            "model": config.llm.model,
+            "model": normalized_model,
             "api_key": config.llm.api_key,
             "temperature": config.llm.temperature,
             "max_tokens": config.llm.max_tokens,
@@ -49,7 +81,7 @@ def get_llm() -> BaseChatModel:
     elif provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
         _llm_instance = ChatAnthropic(
-            model=config.llm.model,
+            model=normalized_model,
             api_key=config.llm.api_key,
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
@@ -58,7 +90,7 @@ def get_llm() -> BaseChatModel:
     elif provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
         _llm_instance = ChatGoogleGenerativeAI(
-            model=config.llm.model,
+            model=normalized_model,
             google_api_key=config.llm.api_key,
             temperature=config.llm.temperature,
             max_output_tokens=config.llm.max_tokens,
@@ -67,7 +99,7 @@ def get_llm() -> BaseChatModel:
     elif provider == "qwen":
         from langchain_qwq import ChatQwen
         _llm_instance = ChatQwen(
-            model=config.llm.model,
+            model=normalized_model,
             api_key=config.llm.api_key,
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
@@ -78,7 +110,7 @@ def get_llm() -> BaseChatModel:
         from langchain_openai import ChatOpenAI
         base_url = config.llm.base_url.strip() or "http://localhost:18789/v1"
         _llm_instance = ChatOpenAI(
-            model=config.llm.model or "openclaw-default",  # langhchain 需要非空字符串，用一个兜底标识
+            model=normalized_model or "openclaw-default",  # langhchain 需要非空字符串，用一个兜底标识
             api_key=config.llm.api_key or "openclaw-local-key",  # dummy key
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,

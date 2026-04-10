@@ -117,6 +117,38 @@ class ActionPipeline:
             description=f"步骤{step.step_id}: {step.description}",
         )
 
+        # ── 人工介入兜底 (Human-in-the-loop) ──
+        if not retry_result.success:
+            try:
+                import sys
+                if sys.stdin.isatty():
+                    from rich.prompt import Confirm
+                    from webagent.utils.logger import console
+                    console.print(f"\n[bold yellow]⚠️ 步骤执行受阻或点选失败: {step.description}[/bold yellow]")
+                    console.print(f"[dim]原因为: {retry_result.last_error}[/dim]")
+                    
+                    loop = asyncio.get_event_loop()
+                    should_intervene = await loop.run_in_executor(
+                        None, 
+                        lambda: Confirm.ask("是否需要人工介入辅助操作？(将暂停自动化并允许您在浏览器内手工点击)")
+                    )
+                    
+                    if should_intervene:
+                        console.print("[cyan]👉 已开启 Playwright 检查器，浏览器处于暂停状态。[/cyan]")
+                        console.print("[cyan]请在浏览器中手工完成该操作，完成后点击浮动栏上的 'Resume / 恢复' 按钮。[/cyan]")
+                        
+                        await self.page.pause()
+                        
+                        console.print("[green]✅ 收到恢复信号，视作操作成功并继续。[/green]")
+                        retry_result.success = True
+                        retry_result.last_error = ""
+                        retry_result.should_replan = False
+                        
+                        # 把接管后的动作标记进历史数据，虽然这里没有精准记坐标，但在知识库后续可优化
+                        step.value = "[HUMAN_INTERVENED]" 
+            except Exception as e:
+                logger.debug(f"人工介入交互异常: {e}")
+
         # ── 5. 后置校验 ──
         post_state = await self.validator.get_page_state()
 
