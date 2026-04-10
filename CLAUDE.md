@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-智能 Web 自动化 Agent 系统 (WebAgent) v0.6.1 — 基于视觉感知 + 多 Agent 陪审团 + 梦境自清理的 Web 自动化操作系统。v0.6.1 引入了全新的 **Turbo Execution** 引擎，支持截图压缩、智能延迟探测及 OpenClaw 云端/本地模型无缝集成。
+智能 Web 自动化 Agent 系统 (WebAgent) v0.7.1 — 基于视觉感知 + 多 Agent 陪审团 + 梦境自清理的 Web 自动化操作系统。v0.7.1 引入了 **模型归一化映射**、**异形组件深度解析** 以及 **人机协同自学习 (Human-in-the-loop Tracker)** 机制。
 
 ## 常用命令
 
 ```bash
-# 环境同步 (v0.6.1 增加了 Pillow 依赖用于截图压缩)
+# 环境同步 (v0.7.1 增加了对不同模型归一化的支持)
 uv sync
 
 # 安装浏览器
