@@ -1,8 +1,8 @@
-# 🤖 智能Web自动化Agent系统 (WebAgent) v0.7.1
+# 🤖 智能 Web 自动化操作 Agent (WebAgent)
 
-基于 **视觉感知 + 多Agent陪审团 + 梦境自清理** 的新一代智能Web自动化操作系统。
+基于 **视觉感知 + 多 Agent 陪审团 + 梦境自清理** 的新一代 **Web 系统** 自动化操作系统。
 
-通过截图理解（Vision-Driven）取代传统的 DOM 元素定位，实现更接近人类行为、更具自愈能力的自动化交互。
+通过自然语言指令驱动（Vision-Driven）取代传统的 DOM 元素定位，实现更接近人类行为、更具自愈能力的自动化交互。
 
 ---
 
@@ -11,9 +11,9 @@
 - 🎯 **SOM 高级视觉定位 (Set-of-Mark)** — 通过前端注入，将可交互元素（包括跨域 Iframe 和 Shadow DOM 完全穿透）贴上数字编号，让大模型直接基于视觉 `ID` 操作，准确率逼近 100%。
 - 🧠 **真正的语义闭环 (Vector DB)** — 主动学习到的知识不仅能看还能“用”！利用 Embedding 将知识库意图向量化，探索时基于 Cosine Similarity 无缝匹配。
 - ⏳ **Mutation Observer 底层调度** — 摒除全部 `sleep()` 与脆弱的网络层等待，深入监听 DOM 树变化探测组件空闲状态，快准狠！
-- 🧱 **模型归一化映射 (Model Normalization)** — [NEW] 自动适配 Gemini 3 Pro, Qwen 3.5 Plus, Gemma 4 等非标准模型名称至官方 API 端点，消除配置歧义与格式异常。
-- 🖲️ **异形组件深度解析 (Deep Vision Support)** — [NEW] 针对无标签的 `div` 登录按钮、`svg`/`canvas` 绘图组件进行专项坐标吸附优化，识别与命中率大幅提升。
-- 🙋‍♂️ **人机协同自学习 (Human-in-the-loop Tracker)** — [NEW] 当执行卡点时，通过实时物理轨道追踪（Tracker）捕获用户纠错点击的 X/Y 坐标与组件特征，将其作为黄金样本喂回 AI 纠错闭环。
+- 🧱 **模型归一化映射 (Model Normalization)** — 自动适配主流多模态大模型（如 Gemini, Qwen, Gemma）的非标准名称配置，消除格式异常。
+- 🖲️ **异形组件深度解析 (Deep Vision Support)** — 针对无标签的 `div` 登录按钮、`svg`/`canvas` 绘图组件进行专项坐标吸附优化，识别与命中率大幅提升。
+- 🙋‍♂️ **人机协同自学习 (Human-in-the-loop Tracker)** — 当执行卡点时，通过实时物理轨道追踪（Tracker）捕获用户纠错点击的 X/Y 坐标与组件特征，将其作为黄金样本喂回 AI 纠错闭环。
 - 🛠️ **高性能执行引擎 (Turbo Execution)** — 全面优化视觉感知管线，通过截图压缩 (JPEG)、智能稳定探测 (MutationObserver) 和感知步骤合并，将操作延迟降低了 70%，效率提升 3~5 倍！
 - 🛡️ **沙盒防卫审计 (Safety Intercept)** — 风险动态拦截，一旦大模型意识到动作有破坏/写表单倾向，立马封禁死胡同路径，保障生产环境不被探索污染。
 
