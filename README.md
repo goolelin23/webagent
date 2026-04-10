@@ -13,7 +13,7 @@
 - ⏳ **Mutation Observer 底层调度** — 摒除全部 `sleep()` 与脆弱的网络层等待，深入监听 DOM 树变化探测组件空闲状态，快准狠！
 - 🧱 **模型归一化映射 (Model Normalization)** — [NEW] 自动适配 Gemini 3 Pro, Qwen 3.5 Plus, Gemma 4 等非标准模型名称至官方 API 端点，消除配置歧义与格式异常。
 - 🖲️ **异形组件深度解析 (Deep Vision Support)** — [NEW] 针对无标签的 `div` 登录按钮、`svg`/`canvas` 绘图组件进行专项坐标吸附优化，识别与命中率大幅提升。
-- 🙋‍♂️ **人机协同回退机制 (Human-in-the-loop)** — [NEW] 当自动化执行进入识别卡点（如点选不到）时，通过 CLI 实时反问并允许人工接管浏览器操作，完成后自动续航并学习。
+- 🙋‍♂️ **人机协同自学习 (Human-in-the-loop Tracker)** — [NEW] 当执行卡点时，通过实时物理轨道追踪（Tracker）捕获用户纠错点击的 X/Y 坐标与组件特征，将其作为黄金样本喂回 AI 纠错闭环。
 - 🛠️ **高性能执行引擎 (Turbo Execution)** — 全面优化视觉感知管线，通过截图压缩 (JPEG)、智能稳定探测 (MutationObserver) 和感知步骤合并，将操作延迟降低了 70%，效率提升 3~5 倍！
 - 🛡️ **沙盒防卫审计 (Safety Intercept)** — 风险动态拦截，一旦大模型意识到动作有破坏/写表单倾向，立马封禁死胡同路径，保障生产环境不被探索污染。
 

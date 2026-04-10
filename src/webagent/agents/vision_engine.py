@@ -524,43 +524,56 @@ class VisionEngine:
 
     async def _smart_click(self, page: Page, x: int, y: int, selector: str = "") -> bool:
         """
-        智能点击：优先用 selector，用不了再用精修坐标
-
-        Returns:
-            是否成功点击
+        智能点击：全方位打击死角级难点组件
         """
-        # 策略1: 如果有 CSS 选择器，优先使用 Playwright 的元素级点击
+        # 策略1: 如果有 CSS 选择器，优先使用 Playwright 的元素级强制点击
         if selector:
             try:
                 locator = page.locator(selector)
                 if await locator.count() > 0 and await locator.first.is_visible():
-                    await locator.first.click(timeout=3000)
-                    print_agent("vision", f"  ✅ 选择器点击成功: {selector}")
+                    # 加入 force=True 穿透透明遮罩
+                    await locator.first.click(timeout=3000, force=True)
+                    print_agent("vision", f"  ✅ 选择器 (强制) 点击成功: {selector}")
                     return True
             except Exception as e:
                 logger.debug(f"选择器点击失败 [{selector}]: {e}")
 
-        # 策略2: 使用精修后的坐标点击
+        # 策略2: 平滑仿真移动 + 精修后的物理坐标点击（绕过单纯 Click 验证与 Hover 检查）
         try:
-            await page.mouse.click(x, y)
+            # 模拟人的鼠标移过去
+            await page.mouse.move(x, y, steps=10)
+            await asyncio.sleep(0.05)
+            await page.mouse.down()
+            await asyncio.sleep(0.05)
+            await page.mouse.up()
+            print_agent("vision", f"  ✅ 物理仿真坐标点击: ({x}, {y})")
             return True
         except Exception as e:
             logger.debug(f"坐标点击失败 ({x},{y}): {e}")
 
-        # 策略3: 用 JS 直接触发点击事件
+        # 策略3: 用 JS 构建完整的事件栈触发并冒泡
         try:
             clicked = await page.evaluate(f"""
                 (() => {{
                     const el = document.elementFromPoint({x}, {y});
-                    if (el) {{
-                        el.click();
-                        return true;
-                    }}
-                    return false;
+                    if (!el) return false;
+                    
+                    // 构建完全仿真的事件序列来欺骗一些 React / Vue 的底层绑定
+                    const eventOpts = {{ bubbles: true, cancelable: true, view: window }};
+                    el.dispatchEvent(new MouseEvent('pointerover', eventOpts));
+                    el.dispatchEvent(new MouseEvent('pointerenter', eventOpts));
+                    el.dispatchEvent(new MouseEvent('mouseover', eventOpts));
+                    el.dispatchEvent(new MouseEvent('mousedown', eventOpts));
+                    el.dispatchEvent(new MouseEvent('mouseup', eventOpts));
+                    el.dispatchEvent(new MouseEvent('click', eventOpts));
+                    
+                    // 同样尝试直接的原生触发
+                    el.click();
+                    return true;
                 }})()
             """)
             if clicked:
-                print_agent("vision", f"  ✅ JS 点击兜底成功")
+                print_agent("vision", f"  ✅ JS 深度事件流触发布线成功")
                 return True
         except Exception as e:
             logger.debug(f"JS 点击失败: {e}")

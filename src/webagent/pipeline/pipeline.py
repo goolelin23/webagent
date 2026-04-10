@@ -137,15 +137,45 @@ class ActionPipeline:
                         console.print("[cyan]👉 已开启 Playwright 检查器，浏览器处于暂停状态。[/cyan]")
                         console.print("[cyan]请在浏览器中手工完成该操作，完成后点击浮动栏上的 'Resume / 恢复' 按钮。[/cyan]")
                         
+                        # 注入前端嗅探器，精准监听用户的人工点击动作以实现纠错自学习
+                        await self.page.evaluate("""
+                            window.__human_tracker = null;
+                            window.__ht_listener = (e) => {
+                                if (e.isTrusted) {
+                                    window.__human_tracker = {
+                                        x: e.clientX,
+                                        y: e.clientY,
+                                        tag: e.target.tagName,
+                                        id: e.target.id || '',
+                                        class: e.target.className || '',
+                                        text: (e.target.textContent || '').trim().substring(0, 40)
+                                    };
+                                }
+                            };
+                            document.body.addEventListener('click', window.__ht_listener, true);
+                        """)
+
                         await self.page.pause()
                         
-                        console.print("[green]✅ 收到恢复信号，视作操作成功并继续。[/green]")
+                        # 提取用户留下的纠错轨迹数据
+                        tracked_data = await self.page.evaluate("""
+                            (() => {
+                                document.body.removeEventListener('click', window.__ht_listener, true);
+                                return window.__human_tracker;
+                            })()
+                        """)
+                        
+                        if tracked_data:
+                            # 提取用户的纠错坐标与目标特征，并固化为管线日志的 step.value 
+                            step.value = f"[HUMAN_CORRECTION] x:{tracked_data['x']}, y:{tracked_data['y']}, tag:{tracked_data['tag']}, text:{tracked_data['text']}"
+                            console.print(f"[green]✅ 已捕获人类导师纠错动作坐标: ({tracked_data['x']}, {tracked_data['y']})，组件特征已记入模型！[/green]")
+                        else:
+                            step.value = "[HUMAN_INTERVENED]"
+                            console.print("[green]✅ 收到恢复信号，未捕获点击，视作接管成功继续。[/green]")
+
                         retry_result.success = True
                         retry_result.last_error = ""
                         retry_result.should_replan = False
-                        
-                        # 把接管后的动作标记进历史数据，虽然这里没有精准记坐标，但在知识库后续可优化
-                        step.value = "[HUMAN_INTERVENED]" 
             except Exception as e:
                 logger.debug(f"人工介入交互异常: {e}")
 
