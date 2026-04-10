@@ -85,7 +85,7 @@ class AppConfig:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
-    log_file: str = os.getenv("LOG_FILE", "logs/webagent.log")
+    log_file: str = os.getenv("LOG_FILE", "logs/webpilot.log")
     knowledge_base_dir: str = os.getenv("KNOWLEDGE_BASE_DIR", "knowledge_base")
 
     @property

@@ -25,7 +25,7 @@ from webagent.prompt_engine.templates.vision import (
 from webagent.utils.logger import get_logger, print_agent, print_warning
 from webagent.utils.llm import get_config, get_llm
 
-logger = get_logger("webagent.agents.vision_engine")
+logger = get_logger("webpilot.agents.vision_engine")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 坐标精修用的 JS 脚本

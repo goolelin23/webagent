@@ -1,5 +1,5 @@
 [project]
-name = "webagent"
+name = "webpilot-ai"
 version = "0.7.1"
 description = "智能Web自动化Agent系统 — 基于视觉驱动 + AI + Playwright的六层架构"
 authors = [
@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-webagent = "webagent.main:cli_entry"
+webpilot = "webagent.main:cli_entry"
 
 [project.optional-dependencies]
 dev = [

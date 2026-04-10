@@ -18,7 +18,7 @@ from webagent.prompt_engine.engine import PromptEngine
 from webagent.utils.logger import get_logger, print_agent, print_success, print_warning
 from webagent.utils.llm import get_config, get_llm
 
-logger = get_logger("webagent.agents.explorer")
+logger = get_logger("webpilot.agents.explorer")
 
 
 class ExplorerAgent:

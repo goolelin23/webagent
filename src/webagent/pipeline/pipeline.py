@@ -16,7 +16,7 @@ from webagent.pipeline.retry_manager import RetryManager, RetryResult
 from webagent.knowledge.models import ExecutionStep
 from webagent.utils.logger import get_logger, print_step, print_success, print_error, print_warning
 
-logger = get_logger("webagent.pipeline")
+logger = get_logger("webpilot.pipeline")
 
 
 @dataclass

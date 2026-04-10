@@ -1,6 +1,6 @@
 """
 OpenClaw (龙虾) 技能导出器
-将 WebAgent 的知识库和页面技能导出为 OpenClaw 兼容的 SKILL.md 格式
+将 WebPilot AI 的知识库和页面技能导出为 OpenClaw 兼容的 SKILL.md 格式
 支持 OpenClaw 直接加载使用
 """
 
@@ -15,14 +15,14 @@ from webagent.knowledge.models import (
 from webagent.knowledge.store import KnowledgeStore
 from webagent.utils.logger import get_logger, print_agent, print_success
 
-logger = get_logger("webagent.openclaw")
+logger = get_logger("webpilot.openclaw")
 
 
 class OpenClawExporter:
     """
     OpenClaw 技能导出器
 
-    将 WebAgent 扫描生成的知识库导出为 OpenClaw 的 Skill 格式:
+    将 WebPilot AI 扫描生成的知识库导出为 OpenClaw 的 Skill 格式:
     - 每个页面技能 → 一个 SKILL.md
     - 每个业务流程 → 一个 SKILL.md
     - 站点总览 → 一个顶层 SKILL.md
@@ -121,17 +121,17 @@ class OpenClawExporter:
                 entities_info = ", ".join(analysis.business_entities)
 
         content = f"""---
-name: webagent_{site.domain.replace('.', '_').replace(':', '_')}_overview
-description: "WebAgent 站点知识总览 — {site.site_name or site.domain}。了解该系统的页面结构、可用操作和业务流程。"
+name: webpilot_{site.domain.replace('.', '_').replace(':', '_')}_overview
+description: "WebPilot AI 站点知识总览 — {site.site_name or site.domain}。了解该系统的页面结构、可用操作和业务流程。"
 user-invocable: true
 metadata:
   openclaw.requires.bins: []
   openclaw.os: ["darwin", "linux", "windows"]
-  webagent.domain: "{site.domain}"
-  webagent.version: "2.0"
+  webpilot.domain: "{site.domain}"
+  webpilot.version: "2.0"
 ---
 
-# 🤖 WebAgent 站点知识 — {site.site_name or site.domain}
+# 🤖 WebPilot AI 站点知识 — {site.site_name or site.domain}
 
 你已经学习了关于 **{site.site_name or site.domain}** 的完整知识。当用户要求你操作该系统时，请使用以下知识。
 
@@ -215,14 +215,14 @@ metadata:
             steps_doc = "\n".join(step_lines)
 
         content = f"""---
-name: webagent_{skill.skill_id}
+name: webpilot_{skill.skill_id}
 description: "{skill.name} — {skill.description}"
 user-invocable: false
 metadata:
   openclaw.requires.bins: []
-  webagent.skill_type: "{skill.skill_type}"
-  webagent.page_url: "{skill.page_url}"
-  webagent.auto_generated: true
+  webpilot.skill_type: "{skill.skill_type}"
+  webpilot.page_url: "{skill.page_url}"
+  webpilot.auto_generated: true
 ---
 
 # 🔧 {skill.name}
@@ -307,13 +307,13 @@ metadata:
         keywords_str = ", ".join(wf.trigger_keywords)
 
         content = f"""---
-name: webagent_workflow_{wf.workflow_id}
+name: webpilot_workflow_{wf.workflow_id}
 description: "{wf.name} — {wf.description or '完整业务流程'}。触发关键词: {keywords_str}"
 user-invocable: true
 metadata:
   openclaw.requires.bins: []
-  webagent.workflow: true
-  webagent.trigger_keywords: {json.dumps(wf.trigger_keywords, ensure_ascii=False)}
+  webpilot.workflow: true
+  webpilot.trigger_keywords: {json.dumps(wf.trigger_keywords, ensure_ascii=False)}
 ---
 
 # 🔄 {wf.name}

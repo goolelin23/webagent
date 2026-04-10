@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-智能 Web 网页自然语言自动化操作 Agent 系统 (WebAgent) — 基于视觉感知 + 多 Agent 陪审团 + 梦境自清理的 Web 系统自动化操作系统。支持模型归一化映射、异形组件深度解析以及人机协同自学习机制。
+智能 Web 网页自然语言自动化操作 Agent 系统 (WebPilot AI) — 基于视觉感知 + 多 Agent 陪审团 + 梦境自清理的 Web 系统自动化操作系统。支持模型归一化映射、异形组件深度解析以及人机协同自学习机制。
 
 ## 常用命令
 
@@ -16,20 +16,20 @@ uv sync
 uv run playwright install chromium
 
 # 启动交互式 Agent
-uv run webagent
+uv run webpilot
 
 # 执行自然语言指令
-uv run webagent run "创建采购订单" --url https://example.com
+uv run webpilot run "创建采购订单" --url https://example.com
 
 # 视觉驱动深度扫描
-uv run webagent scan --url https://example.com --deep
+uv run webpilot scan --url https://example.com --deep
 
 # 梦境模式整理知识库
-uv run webagent /dream example.com
+uv run webpilot /dream example.com
 
 # 查看知识库
-uv run webagent kb list
-uv run webagent kb show example.com
+uv run webpilot kb list
+uv run webpilot kb show example.com
 
 # 运行测试
 uv run pytest
@@ -74,7 +74,7 @@ cp .env.example .env
 ## 目录结构
 
 ```
-src/webagent/
+src/webpilot/
 ├── main.py              # 程序入口 (cli_entry)
 ├── cli/
 │   └── commander.py     # CLI 命令解析与交互

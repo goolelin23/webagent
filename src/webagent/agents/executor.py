@@ -21,7 +21,7 @@ from webagent.utils.logger import (
 )
 from webagent.utils.config import get_config
 
-logger = get_logger("webagent.agents.executor")
+logger = get_logger("webpilot.agents.executor")
 
 
 @dataclass

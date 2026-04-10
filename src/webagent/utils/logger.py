@@ -28,7 +28,7 @@ console = Console(theme=THEME)
 
 
 def setup_logger(
-    name: str = "webagent",
+    name: str = "webpilot",
     level: str = "INFO",
     log_file: str | Path | None = None,
 ) -> logging.Logger:
@@ -76,7 +76,7 @@ def setup_logger(
     return logger
 
 
-def get_logger(module_name: str = "webagent") -> logging.Logger:
+def get_logger(module_name: str = "webpilot") -> logging.Logger:
     """获取指定模块的日志记录器"""
     return logging.getLogger(module_name)
 
@@ -89,9 +89,9 @@ def print_banner():
     banner = f"""
 [bold cyan]╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
-║   🤖  智能Web自动化Agent系统  (WebAgent)                     ║
+║   🤖  WebPilot AI (网页机长)                                 ║
 ║                                                              ║
-║   Browser Use + AI + Playwright 六层架构智能体               ║
+║   基于视觉感知 + 网页自然语言自动化操作的强力 Agent             ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝[/bold cyan]
   [dim]模型: {provider_info}[/dim]

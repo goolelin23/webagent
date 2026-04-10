@@ -163,7 +163,7 @@ class TestDreamer:
         assert len(site.learned_actions) == 1
         assert site.learned_actions[0]["action_id"] == "a1"
 
-    @patch("webagent.agents.dreamer.Path")
+    @patch("webpilot.agents.dreamer.Path")
     def test_clean_orphaned_files(self, mock_path_cls):
         store = MagicMock()
         dreamer = Dreamer(store)

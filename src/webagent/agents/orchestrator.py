@@ -23,7 +23,7 @@ from webagent.utils.logger import (
 )
 from webagent.utils.config import get_config
 
-logger = get_logger("webagent.agents.orchestrator")
+logger = get_logger("webpilot.agents.orchestrator")
 
 
 class AgentOrchestrator:

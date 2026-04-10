@@ -24,7 +24,7 @@ from webagent.prompt_engine.templates.explorer import DATA_MOCK_PROMPT, BLOCK_RE
 from webagent.utils.logger import get_logger, print_agent, print_success, print_warning, print_error
 from webagent.utils.llm import get_config, get_llm
 
-logger = get_logger("webagent.agents.active_learner")
+logger = get_logger("webpilot.agents.active_learner")
 
 
 class ActiveLearner:

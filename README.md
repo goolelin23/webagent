@@ -1,4 +1,4 @@
-# 🤖 智能 Web 自然语言自动化操作 Agent (WebAgent)
+# 🤖 智能 Web 自然语言自动化操作 Agent (WebPilot AI)
 
 基于 **视觉感知 + 多 Agent 陪审团 + 梦境自清理** 的新一代 **Web 系统** 自动化操作系统。
 
@@ -53,8 +53,8 @@
 ### 2. 初始化项目
 ```bash
 # 克隆项目
-git clone https://github.com/goolelin23/webagent.git
-cd webagent
+git clone https://github.com/goolelin23/webpilot.git
+cd webpilot
 
 # 自动同步环境 (含 Python 3.11 及所有依赖)
 uv sync
@@ -70,7 +70,7 @@ cp .env.example .env
 ```
 
 ### 4. 🦞 配合 OpenClaw (龙虾) 使用 (推荐)
-如果你已经安装了 [OpenClaw](https://openclaw.ai)，WebAgent 现在支持零配置直接调用 OpenClaw 的本地模型接口：
+如果你已经安装了 [OpenClaw](https://openclaw.ai)，WebPilot AI 现在支持零配置直接调用 OpenClaw 的本地模型接口：
 
 ```bash
 # 在 .env 中修改
@@ -87,22 +87,22 @@ LLM_API_KEY=    # 留空即可
 ### 视觉驱动探索
 ```bash
 # 启动视觉驱动深度扫描
-uv run webagent scan --url https://example.com --deep
+uv run webpilot scan --url https://example.com --deep
 
 # 进入交互式 Agent (支持自然语言对话)
-uv run webagent run
+uv run webpilot run
 ```
 
 ### 知识管理与优化
 ```bash
 # 💤 启动梦境模式：整理、去重、清理站点知识库
-uv run webagent /dream example.com
+uv run webpilot /dream example.com
 
 # 🔄 回放已学习的操作路径
-uv run webagent /replay example.com
+uv run webpilot /replay example.com
 
 # 查看所有已学到的操作
-uv run webagent kb list
+uv run webpilot kb list
 ```
 
 ---

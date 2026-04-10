@@ -19,7 +19,7 @@ from webagent.prompt_engine.templates.jury import DREAM_SUMMARIZE_PROMPT
 from webagent.utils.logger import get_logger, print_agent, print_success, print_warning
 from webagent.utils.llm import get_llm
 
-logger = get_logger("webagent.agents.dreamer")
+logger = get_logger("webpilot.agents.dreamer")
 
 
 @dataclass

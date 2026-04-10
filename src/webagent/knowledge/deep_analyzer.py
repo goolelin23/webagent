@@ -15,7 +15,7 @@ from webagent.knowledge.models import (
 from webagent.utils.logger import get_logger, print_agent, print_success, console
 from webagent.utils.llm import get_llm
 
-logger = get_logger("webagent.knowledge.deep_analyzer")
+logger = get_logger("webpilot.knowledge.deep_analyzer")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

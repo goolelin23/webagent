@@ -10,7 +10,7 @@ from typing import Any
 from playwright.async_api import Page, Locator
 from webagent.utils.logger import get_logger
 
-logger = get_logger("webagent.pipeline.validator")
+logger = get_logger("webpilot.pipeline.validator")
 
 
 @dataclass

@@ -1,4 +1,4 @@
-"""Allow running as `python -m webagent`"""
+"""Allow running as `python -m webpilot`"""
 from webagent.main import main
 
 main()

@@ -12,7 +12,7 @@ from webagent.knowledge.models import SiteKnowledge, PageKnowledge
 from webagent.utils.config import get_config
 from webagent.utils.logger import get_logger
 
-logger = get_logger("webagent.knowledge")
+logger = get_logger("webpilot.knowledge")
 
 
 class KnowledgeStore:

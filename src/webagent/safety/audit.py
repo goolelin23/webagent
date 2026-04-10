@@ -12,7 +12,7 @@ from typing import Any
 
 from webagent.utils.logger import get_logger
 
-logger = get_logger("webagent.safety.audit")
+logger = get_logger("webpilot.safety.audit")
 
 
 @dataclass

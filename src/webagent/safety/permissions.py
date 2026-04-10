@@ -10,7 +10,7 @@ from typing import Any
 
 from webagent.utils.logger import get_logger
 
-logger = get_logger("webagent.safety.permissions")
+logger = get_logger("webpilot.safety.permissions")
 
 
 @dataclass

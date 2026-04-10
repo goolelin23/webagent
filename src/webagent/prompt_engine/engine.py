@@ -25,7 +25,7 @@ from webagent.prompt_engine.templates.executor import (
 )
 from webagent.utils.logger import get_logger
 
-logger = get_logger("webagent.prompt_engine")
+logger = get_logger("webpilot.prompt_engine")
 
 
 class PromptEngine:

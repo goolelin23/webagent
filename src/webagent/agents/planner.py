@@ -15,7 +15,7 @@ from webagent.skills.skill_manager import SkillManager
 from webagent.utils.logger import get_logger, print_agent
 from webagent.utils.llm import get_llm
 
-logger = get_logger("webagent.agents.planner")
+logger = get_logger("webpilot.agents.planner")
 
 
 class PlannerAgent:

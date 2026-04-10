@@ -12,7 +12,7 @@ from typing import Any
 from webagent.knowledge.models import ExecutionStep
 from webagent.utils.logger import get_logger, print_warning, console
 
-logger = get_logger("webagent.safety")
+logger = get_logger("webpilot.safety")
 
 
 class RiskLevel(str, Enum):

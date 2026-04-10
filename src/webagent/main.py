@@ -1,5 +1,5 @@
 """
-智能Web自动化Agent系统 — 程序入口
+WebPilot AI (网页机长) — 程序入口
 """
 
 import sys

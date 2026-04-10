@@ -24,19 +24,19 @@ logger = None
 def create_parser() -> argparse.ArgumentParser:
     """创建命令行参数解析器"""
     parser = argparse.ArgumentParser(
-        prog="webagent",
-        description="🤖 智能Web自动化Agent系统 — 基于 Browser Use + AI + Playwright",
+        prog="webpilot",
+        description="🤖 WebPilot AI (网页机长) — 基于视觉感知 + 网页自然语言自动化操作的强力 Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  webagent                                            # 进入交互模式
-  webagent run "创建一个采购订单"                       # 直接执行指令
-  webagent run "创建采购订单" --url https://example.com  # 指定目标系统
-  webagent scan --url https://example.com              # 扫描系统并生成知识库
-  webagent scan --url https://example.com --depth 3    # 扫描3层深度
-  webagent kb list                                     # 查看所有知识库
-  webagent kb show example.com                         # 查看特定站点知识
-  webagent skills                                      # 查看可用技能插件
+  webpilot                                            # 进入交互模式
+  webpilot run "创建一个采购订单"                       # 直接执行指令
+  webpilot run "创建采购订单" --url https://example.com  # 指定目标系统
+  webpilot scan --url https://example.com              # 扫描系统并生成知识库
+  webpilot scan --url https://example.com --depth 3    # 扫描3层深度
+  webpilot kb list                                     # 查看所有知识库
+  webpilot kb show example.com                         # 查看特定站点知识
+  webpilot skills                                      # 查看可用技能插件
         """,
     )
 
@@ -149,7 +149,7 @@ class Commander:
 
         while True:
             try:
-                user_input = Prompt.ask("[bold cyan]🤖 WebAgent[/bold cyan]").strip()
+                user_input = Prompt.ask("[bold cyan]🤖 WebPilot[/bold cyan]").strip()
 
                 if not user_input:
                     continue
@@ -294,7 +294,7 @@ class Commander:
                 console.print(f"  [dim]未找到相关页面[/dim]")
 
         else:
-            console.print("  使用: webagent kb [list|show|delete|search]")
+            console.print("  使用: webpilot kb [list|show|delete|search]")
 
     def _skills_command(self):
         """显示可用技能列表"""

@@ -70,7 +70,7 @@ class TestOpenClawExporter:
             assert (overview_dir / "SKILL.md").exists()
             
             overview_content = (overview_dir / "SKILL.md").read_text(encoding="utf-8")
-            assert "name: webagent_test-openclaw_com_overview" in overview_content
+            assert "name: webpilot_test-openclaw_com_overview" in overview_content
             assert "测试系统" in overview_content
             
             # Check page skill
@@ -80,7 +80,7 @@ class TestOpenClawExporter:
             assert (skill_dir / "skill_def.json").exists()
             
             skill_content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-            assert "name: webagent_login" in skill_content
+            assert "name: webpilot_login" in skill_content
             assert "登录平台" in skill_content
             
             # Check workflow skill
@@ -90,7 +90,7 @@ class TestOpenClawExporter:
             assert (workflow_dir / "workflow_def.json").exists()
             
             workflow_content = (workflow_dir / "SKILL.md").read_text(encoding="utf-8")
-            assert "name: webagent_workflow_login_flow" in workflow_content
+            assert "name: webpilot_workflow_login_flow" in workflow_content
             assert "登录流程" in workflow_content
             
             # Check knowledge base json

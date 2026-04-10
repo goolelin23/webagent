@@ -10,7 +10,7 @@ from typing import Callable, Awaitable, Any
 from webagent.utils.logger import get_logger
 from webagent.utils.config import get_config
 
-logger = get_logger("webagent.pipeline.retry")
+logger = get_logger("webpilot.pipeline.retry")
 
 
 @dataclass
