@@ -1,4 +1,4 @@
-# 🤖 智能Web自动化Agent系统 (WebAgent) v0.7.0
+# 🤖 智能Web自动化Agent系统 (WebAgent) v0.7.1
 
 基于 **视觉感知 + 多Agent陪审团 + 梦境自清理** 的新一代智能Web自动化操作系统。
 
