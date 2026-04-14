@@ -19,6 +19,11 @@ from webagent.utils.logger import get_logger, print_step, print_success, print_e
 logger = get_logger("webpilot.pipeline")
 
 
+class _VisionFallbackFailed(BaseException):
+    """选择器 + 视觉降级均失败，跳过重试直接进入人工介入（继承 BaseException 绕过 retry_manager 的 Exception 捕获）"""
+    pass
+
+
 @dataclass
 class ActionResult:
     """操作执行结果"""
@@ -111,11 +116,26 @@ class ActionPipeline:
                 logger.warning(f"技能 [{step.skill}] 执行失败: {e}")
 
         # ── 4. 执行操作（带重试） ──
-        retry_result = await self.retry_manager.execute_with_retry(
-            operation=lambda: self._execute_action(step),
-            recovery_action=pre_validation.recovery_action if not pre_validation.passed else "",
-            description=f"步骤{step.step_id}: {step.description}",
-        )
+        # 执行链路: 选择器操作(重试) → 视觉降级(自动) → 询问用户(最后手段)
+        # 当视觉降级也失败时，_execute_action 会抛出 _VisionFallbackFailed
+        # 此时跳过无意义的重试循环，直接进入人工介入
+        vision_failed = False
+        try:
+            retry_result = await self.retry_manager.execute_with_retry(
+                operation=lambda: self._execute_action(step),
+                recovery_action=pre_validation.recovery_action if not pre_validation.passed else "",
+                description=f"步骤{step.step_id}: {step.description}",
+            )
+        except _VisionFallbackFailed as vfe:
+            # 选择器 + 视觉都失败了，跳过重试直接进入人工介入
+            vision_failed = True
+            retry_result = RetryResult(
+                success=False,
+                attempts=1,
+                last_error=str(vfe),
+                should_replan=False,
+            )
+            logger.warning(f"选择器和视觉降级均失败，准备进入人工介入: {vfe}")
 
         # ── 人工介入兜底 (Human-in-the-loop) ──
         if not retry_result.success:
@@ -124,8 +144,14 @@ class ActionPipeline:
                 if sys.stdin.isatty():
                     from rich.prompt import Confirm
                     from webagent.utils.logger import console
-                    console.print(f"\n[bold yellow]⚠️ 步骤执行受阻或点选失败: {step.description}[/bold yellow]")
-                    console.print(f"[dim]原因为: {retry_result.last_error}[/dim]")
+
+                    if vision_failed:
+                        console.print(f"\n[bold yellow]⚠️ 选择器和视觉模型均无法定位元素: {step.description}[/bold yellow]")
+                        console.print(f"[dim]目标: {step.target}[/dim]")
+                        console.print(f"[dim]请在浏览器中手动完成此操作[/dim]")
+                    else:
+                        console.print(f"\n[bold yellow]⚠️ 步骤执行受阻或点选失败: {step.description}[/bold yellow]")
+                        console.print(f"[dim]原因为: {retry_result.last_error}[/dim]")
                     
                     loop = asyncio.get_event_loop()
                     should_intervene = await loop.run_in_executor(
@@ -305,7 +331,7 @@ class ActionPipeline:
                     await engine._smart_click(self.page, coords["x"], coords["y"])
                     await VisionEngine._wait_stable(self.page)
                 else:
-                    raise ValueError(f"元素未找到且视觉降级也无法定位: {target}")
+                    raise _VisionFallbackFailed(f"元素未找到且视觉降级也无法定位: {target}")
 
         elif action == "fill":
             locator = await self._safe_locator(target, timeout)
@@ -323,7 +349,7 @@ class ActionPipeline:
                     await engine._smart_fill(self.page, coords["x"], coords["y"], value)
                     await VisionEngine._wait_stable(self.page)
                 else:
-                    raise ValueError(f"输入框未找到且视觉降级也无法定位: {target}")
+                    raise _VisionFallbackFailed(f"输入框未找到且视觉降级也无法定位: {target}")
 
         elif action == "select":
             locator = await self._safe_locator(target, timeout)
@@ -342,7 +368,7 @@ class ActionPipeline:
                         await self.page.mouse.click(option_coords["x"], option_coords["y"])
                         await VisionEngine._wait_stable(self.page)
                 else:
-                    raise ValueError(f"下拉框未找到且视觉降级也无法定位: {target}")
+                    raise _VisionFallbackFailed(f"下拉框未找到且视觉降级也无法定位: {target}")
 
         elif action == "check":
             locator = await self._safe_locator(target, timeout)
@@ -355,7 +381,7 @@ class ActionPipeline:
                     from webagent.agents.vision_engine import VisionEngine
                     await VisionEngine._wait_stable(self.page)
                 else:
-                    raise ValueError(f"复选框未找到且视觉降级也无法定位: {target}")
+                    raise _VisionFallbackFailed(f"复选框未找到且视觉降级也无法定位: {target}")
 
         elif action == "wait":
             if target:
@@ -407,7 +433,7 @@ class ActionPipeline:
                     await VisionEngine._wait_stable(self.page)
                     await self.page.keyboard.type(value, delay=50)
                 else:
-                    raise ValueError(f"输入框未找到且视觉降级也无法定位: {target}")
+                    raise _VisionFallbackFailed(f"输入框未找到且视觉降级也无法定位: {target}")
 
         elif action == "press":
             await self.page.keyboard.press(value or "Enter")
