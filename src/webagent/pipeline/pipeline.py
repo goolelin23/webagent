@@ -294,10 +294,25 @@ class ActionPipeline:
 
             if data and data.get("found"):
                 coords = data.get("coordinates", {})
-                x, y = int(coords.get("x", 0)), int(coords.get("y", 0))
+                llm_x, llm_y = int(coords.get("x", 0)), int(coords.get("y", 0))
                 confidence = data.get("confidence", 0)
                 desc = data.get("element_description", "")
-                if x > 0 and y > 0 and confidence >= 0.5:
+                
+                if llm_x > 0 and llm_y > 0 and confidence >= 0.5:
+                    # 读取由于截图压缩或 Mac Retina 屏造成的缩放比例，还原为真实 CSS 逻辑坐标
+                    try:
+                        from PIL import Image
+                        with Image.open(screenshot_path) as img:
+                            img_w, img_h = img.size
+                        viewport = await self.page.evaluate("() => { return { w: window.innerWidth, h: window.innerHeight }; }")
+                        vw, vh = int(viewport["w"]), int(viewport["h"])
+                        x = int((llm_x / img_w) * vw)
+                        y = int((llm_y / img_h) * vh)
+                        logger.debug(f"📐 坐标映射: LLM({llm_x},{llm_y}) [图片 {img_w}x{img_h}] -> CSS({x},{y}) [视口 {vw}x{vh}]")
+                    except Exception as e:
+                        logger.warning(f"坐标缩放转换异常: {e}，将使用原始坐标")
+                        x, y = llm_x, llm_y
+
                     # 对视觉坐标进行 DOM 精修吸附
                     rx, ry, _sel, _method = await vision._refine_coordinates(
                         self.page, x, y, element_description
