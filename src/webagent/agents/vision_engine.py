@@ -297,6 +297,23 @@ class VisionEngine:
       Layer 2: 如果L1命中了非交互元素 → 沿 DOM 树上溯找可交互祖先
       Layer 3: 如果L1+L2都失败 → 在坐标附近50px半径内扫描可交互元素
     """
+    
+    # [Self-Repair Mechanism] 全局视觉自愈偏移量
+    # 在遇到人工接管纠错时，持续测量 LLM 的输出偏差并动态调节
+    GLOBAL_OFFSET_X: int = 0
+    GLOBAL_OFFSET_Y: int = 0
+
+    @classmethod
+    def update_global_offset(cls, dx: int, dy: int):
+        """动态修正视觉偏移误差（指数平滑更新）"""
+        if cls.GLOBAL_OFFSET_X == 0 and cls.GLOBAL_OFFSET_Y == 0:
+            cls.GLOBAL_OFFSET_X = dx
+            cls.GLOBAL_OFFSET_Y = dy
+        else:
+            # 使用类似于梯度下降的平滑策略(EMA)，防止由于用户的某次手抖异常点击导致全局飞偏
+            cls.GLOBAL_OFFSET_X = int(cls.GLOBAL_OFFSET_X * 0.7 + dx * 0.3)
+            cls.GLOBAL_OFFSET_Y = int(cls.GLOBAL_OFFSET_Y * 0.7 + dy * 0.3)
+        print_warning(f"✨ 视觉归一化网络触突已演进更新 -> 新全局偏移预测补充值: (X: {cls.GLOBAL_OFFSET_X}px, Y: {cls.GLOBAL_OFFSET_Y}px)")
 
     def __init__(self, screenshots_dir: str = "screenshots"):
         self.config = get_config()

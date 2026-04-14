@@ -195,9 +195,27 @@ class ActionPipeline:
                         """)
                         
                         if tracked_data:
+                            x_human = tracked_data['x']
+                            y_human = tracked_data['y']
+                            
+                            # ✨ [自愈与神经突触生长] 测量 LLM 偏差 ✨
+                            if hasattr(self, "_last_vision_coords") and self._last_vision_coords:
+                                llm_x = self._last_vision_coords.get("x", 0)
+                                llm_y = self._last_vision_coords.get("y", 0)
+                                dx = x_human - llm_x
+                                dy = y_human - llm_y
+                                
+                                console.print(f"[bold cyan]🤖 对照学习完成: 人工坐标 ({x_human},{y_human}) vs 视觉坐标 ({llm_x},{llm_y})[/bold cyan]")
+                                console.print(f"[bold cyan]   📐 测量出系统当前偏移偏差: ΔX={dx}px, ΔY={dy}px[/bold cyan]")
+                                
+                                # 将偏差值持久化到 VisionEngine，让它以后自动修正
+                                from webagent.agents.vision_engine import VisionEngine
+                                VisionEngine.update_global_offset(dx, dy)
+                                self._last_vision_coords = None
+
                             # 提取用户的纠错坐标与目标特征，并固化为管线日志的 step.value 
-                            step.value = f"[HUMAN_CORRECTION] x:{tracked_data['x']}, y:{tracked_data['y']}, tag:{tracked_data['tag']}, text:{tracked_data['text']}"
-                            console.print(f"[green]✅ 已捕获人类导师纠错动作坐标: ({tracked_data['x']}, {tracked_data['y']})，组件特征已记入模型！[/green]")
+                            step.value = f"[HUMAN_CORRECTION] x:{x_human}, y:{y_human}, tag:{tracked_data['tag']}, text:{tracked_data['text']}"
+                            console.print(f"[green]✅ 已捕获人类导师纠错动作坐标: ({x_human}, {y_human})，组件特征已记入模型！[/green]")
                         else:
                             step.value = "[HUMAN_INTERVENED]"
                             console.print("[green]✅ 收到恢复信号，未捕获点击，视作接管成功继续。[/green]")
@@ -312,6 +330,13 @@ class ActionPipeline:
                     except Exception as e:
                         logger.warning(f"坐标缩放转换异常: {e}，将使用原始坐标")
                         x, y = llm_x, llm_y
+
+                    # [Self-Repair Mechanism] 应用全局自演进修复偏移量
+                    x += vision.GLOBAL_OFFSET_X
+                    y += vision.GLOBAL_OFFSET_Y
+                    
+                    # 记录此时的视觉换算出来的原始坐标 (用于稍后人工对抗验证)
+                    self._last_vision_coords = {"x": x, "y": y}
 
                     # 对视觉坐标进行 DOM 精修吸附
                     rx, ry, _sel, _method = await vision._refine_coordinates(
