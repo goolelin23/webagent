@@ -521,10 +521,46 @@ class VisionEngine:
         logger.info(f"坐标精修未找到元素，使用原始坐标 ({x},{y})")
         return x, y, "", "raw"
 
+    @staticmethod
+    async def _show_visual_cursor(page: Page, x: int, y: int):
+        """在页面上显示一个波纹动画光标，提示用户系统正在此坐标进行视觉操作"""
+        try:
+            await page.evaluate(f'''
+                (() => {{
+                    const el = document.createElement('div');
+                    el.style.position = 'fixed';
+                    el.style.left = ({x} - 15) + 'px';
+                    el.style.top = ({y} - 15) + 'px';
+                    el.style.width = '30px';
+                    el.style.height = '30px';
+                    el.style.borderRadius = '50%';
+                    el.style.backgroundColor = 'rgba(239, 68, 68, 0.5)';
+                    el.style.border = '2px solid rgba(239, 68, 68, 0.8)';
+                    el.style.pointerEvents = 'none';
+                    el.style.zIndex = '2147483647';
+                    el.style.transition = 'all 0.6s cubic-bezier(0.16, 1, 0.3, 1)';
+                    document.body.appendChild(el);
+                    
+                    // 强制引起重排，使初始状态生效
+                    void el.offsetWidth;
+
+                    setTimeout(() => {{
+                        el.style.transform = 'scale(2.5)';
+                        el.style.opacity = '0';
+                    }}, 10);
+                    
+                    setTimeout(() => el.remove(), 700);
+                }})()
+            ''')
+        except Exception:
+            pass
+
     async def _smart_click(self, page: Page, x: int, y: int, selector: str = "") -> bool:
         """
         智能点击：全方位打击死角级难点组件
         """
+        await self._show_visual_cursor(page, x, y)
+
         # 策略1: 如果有 CSS 选择器，优先使用 Playwright 的元素级强制点击
         if selector:
             try:
@@ -583,6 +619,8 @@ class VisionEngine:
         """
         智能填写：优先用 selector 定位输入框
         """
+        await self._show_visual_cursor(page, x, y)
+
         # 策略1: 选择器
         if selector:
             try:
