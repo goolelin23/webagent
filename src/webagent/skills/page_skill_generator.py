@@ -13,7 +13,7 @@ from webagent.skills.base_skill import BaseSkill, SkillResult
 from webagent.skills.skill_manager import SkillManager
 from webagent.utils.logger import get_logger, print_agent
 
-logger = get_logger("webpilot.skills.page_skill_generator")
+logger = get_logger("webagent.skills.page_skill_generator")
 
 
 class DynamicPageSkill(BaseSkill):

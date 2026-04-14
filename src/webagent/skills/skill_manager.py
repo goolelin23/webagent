@@ -12,7 +12,7 @@ from typing import Any
 from webagent.skills.base_skill import BaseSkill, SkillResult
 from webagent.utils.logger import get_logger
 
-logger = get_logger("webpilot.skills")
+logger = get_logger("webagent.skills")
 
 
 class SkillManager:
@@ -34,7 +34,7 @@ class SkillManager:
                 continue
             try:
                 module = importlib.import_module(
-                    f"webpilot.skills.builtin.{module_name}"
+                    f"webagent.skills.builtin.{module_name}"
                 )
                 # 查找模块中的 BaseSkill 子类
                 for attr_name in dir(module):
