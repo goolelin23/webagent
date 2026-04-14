@@ -26,7 +26,7 @@ class RetryResult:
 @dataclass
 class RetryPolicy:
     """重试策略"""
-    max_retries: int = 3
+    max_retries: int = 5
     base_delay: float = 2.0        # 基础延迟(秒)
     max_delay: float = 30.0         # 最大延迟(秒)
     exponential: bool = True        # 是否使用指数退避

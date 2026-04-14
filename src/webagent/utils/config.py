@@ -71,7 +71,7 @@ class SafetyConfig:
 @dataclass
 class PipelineConfig:
     """管线配置"""
-    max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
+    max_retries: int = int(os.getenv("MAX_RETRIES", "5"))
     retry_delay: float = float(os.getenv("RETRY_DELAY", "2.0"))
     page_load_timeout: int = int(os.getenv("PAGE_LOAD_TIMEOUT", "30000"))
     element_timeout: int = int(os.getenv("ELEMENT_TIMEOUT", "10000"))
