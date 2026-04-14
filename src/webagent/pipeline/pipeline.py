@@ -317,14 +317,25 @@ class ActionPipeline:
                 desc = data.get("element_description", "")
                 
                 if llm_x > 0 and llm_y > 0 and confidence >= 0.5:
-                    # 将大模型相对于截图尺寸返回的坐标缩放回 Playwright 使用的纯正 CSS 逻辑视口像素
-                    # 该转换内部也会自动附加上一轮人类教学遗留的全局偏移纠偏
+                    # Step A: 一阶映射 — 将 LLM 截图坐标缩放为 CSS 逻辑像素
                     x, y = await vision._scale_llm_coords(self.page, llm_x, llm_y, screenshot_path)
-                    
-                    # 记录此时的视觉换算出来的原始坐标 (用于稍后人工对抗验证)
+
+                    # Step B: 二阶精修 — 以粗略坐标为中心裁剪局部截图放大后重新定位
+                    # 只在置信度不够时再调用 VLM（避免浪费 Token）
+                    zoom_x, zoom_y, zoom_conf = await vision._zoom_refine_coords(
+                        self.page, x, y, element_description
+                    )
+                    if zoom_conf >= 0.6:
+                        # 二阶定位成功且置信度足够，直接采用
+                        x, y = zoom_x, zoom_y
+                        logger.debug(f"🔬 采用二阶精修坐标: ({x},{y}) conf={zoom_conf:.0%}")
+                    else:
+                        logger.debug(f"🔬 二阶精修置信度不足({zoom_conf:.0%})，保留一阶坐标({x},{y})")
+
+                    # 记录此时的视觉换算出来的原始坐标 (用于稍后人工对抗误差测量)
                     self._last_vision_coords = {"x": x, "y": y}
 
-                    # 对视觉坐标进行 DOM 精修吸附
+                    # Step C: DOM 精修吸附 — elementFromPoint 吸附到真实元素几何中心
                     rx, ry, _sel, _method = await vision._refine_coordinates(
                         self.page, x, y, element_description
                     )

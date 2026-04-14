@@ -20,6 +20,7 @@ from webagent.prompt_engine.templates.vision import (
     VISION_PERCEIVE_PROMPT,
     VISION_VERIFY_PROMPT,
     VISION_LOCATE_PROMPT,
+    VISION_ZOOM_REFINE_PROMPT,
 )
 from webagent.utils.logger import get_logger, print_agent, print_warning
 from webagent.utils.llm import get_config, get_llm
@@ -436,6 +437,157 @@ class VisionEngine:
         x += self.GLOBAL_OFFSET_X
         y += self.GLOBAL_OFFSET_Y
         return x, y
+
+    async def _zoom_refine_coords(
+        self,
+        page: Page,
+        rough_css_x: int,
+        rough_css_y: int,
+        element_description: str,
+        zoom_radius: int = 320,
+        zoom_output_size: int = 512,
+    ) -> tuple[int, int, float]:
+        """
+        视觉二阶精修（Visual Zoom-In Refinement）
+
+        流程:
+          1. 全图截图  → Playwright 原始 PNG（不压缩）
+          2. 坐标映射  → CSS viewport 坐标 × devicePixelRatio → 截图物理像素坐标
+          3. 裁剪局部  → 以粗略坐标为中心裁剪 zoom_radius×2 的区域
+          4. 等比放大  → 贴合 zoom_output_size×zoom_output_size（letterbox 黑边）
+          5. 局部精定位 → 调用视觉模型在放大图中返回 rx/ry
+          6. 坐标反算  → 放大图坐标 → 裁剪图坐标 → 全图像素坐标 → CSS viewport 坐标
+          7. 边界保护  → clamp 到 viewport 范围内
+
+        返回 (refined_css_x, refined_css_y, confidence)
+        失败时降级返回 (rough_css_x, rough_css_y, 0.0)
+        """
+        from PIL import Image
+        import io
+
+        # ── Step 1: 全图截图（PNG 原始，不再压缩，保留每一个物理像素）──
+        ts = int(time.time() * 1000)
+        png_path = self.screenshots_dir / f"zoom_full_{ts}.png"
+        await page.screenshot(path=str(png_path), full_page=False)
+
+        try:
+            # ── Step 2: 坐标映射 — CSS px → 截图物理像素 ──
+            viewport_info = await page.evaluate(
+                """() => ({
+                    w: window.innerWidth,
+                    h: window.innerHeight,
+                    dpr: window.devicePixelRatio || 1
+                })"""
+            )
+            vw  = int(viewport_info["w"])
+            vh  = int(viewport_info["h"])
+            dpr = float(viewport_info["dpr"])
+
+            with Image.open(str(png_path)) as full_img:
+                full_w, full_h = full_img.size
+
+            # 如果 Playwright 以物理像素保存（HDPI），则需乘以 DPR
+            # 保险起见用实际图片宽度推算比例，而不是硬乘 DPR
+            scale_x = full_w / vw   # 截图物理宽度 / CSS 宽度
+            scale_y = full_h / vh
+
+            px_x = int(rough_css_x * scale_x)  # 粗略坐标的截图物理像素位置
+            px_y = int(rough_css_y * scale_y)
+
+            logger.debug(
+                f"🔍 Zoom Refine — CSS({rough_css_x},{rough_css_y}) "
+                f"DPR={dpr:.1f} Scale=({scale_x:.2f},{scale_y:.2f}) "
+                f"--> 物理像素({px_x},{px_y}) [全图 {full_w}x{full_h}]"
+            )
+
+            # ── Step 3: 裁剪局部 ──
+            # 以物理像素为单位的裁剪半径 = zoom_radius * scale
+            phys_radius = int(zoom_radius * max(scale_x, scale_y))
+            crop_x1 = max(0,      px_x - phys_radius)
+            crop_y1 = max(0,      px_y - phys_radius)
+            crop_x2 = min(full_w, px_x + phys_radius)
+            crop_y2 = min(full_h, px_y + phys_radius)
+
+            # 裁剪区域真实宽高
+            crop_w = crop_x2 - crop_x1
+            crop_h = crop_y2 - crop_y1
+
+            with Image.open(str(png_path)) as full_img:
+                cropped = full_img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+
+            # ── Step 4: 等比放大到 zoom_output_size（letterbox 黑边）──
+            ratio = min(zoom_output_size / crop_w, zoom_output_size / crop_h)
+            new_w = int(crop_w * ratio)
+            new_h = int(crop_h * ratio)
+            resized = cropped.resize((new_w, new_h), Image.LANCZOS)
+
+            canvas = Image.new("RGB", (zoom_output_size, zoom_output_size), (0, 0, 0))
+            paste_x = (zoom_output_size - new_w) // 2
+            paste_y = (zoom_output_size - new_h) // 2
+            canvas.paste(resized, (paste_x, paste_y))
+
+            zoom_path = self.screenshots_dir / f"zoom_crop_{ts}.jpg"
+            canvas.save(str(zoom_path), "JPEG", quality=90)
+
+            logger.debug(
+                f"🔬 裁剪区域: ({crop_x1},{crop_y1})-({crop_x2},{crop_y2}) "
+                f"→ 放大到 {zoom_output_size}x{zoom_output_size} (paste@{paste_x},{paste_y}, {new_w}x{new_h})"
+            )
+
+            # ── Step 5: 局部精定位 — 调用 VLM 在放大图中定位 ──
+            prompt = VISION_ZOOM_REFINE_PROMPT.format(element_description=element_description)
+            response = await self._call_vision_llm(prompt, [str(zoom_path)])
+            data = self._extract_json(response)
+
+            if not (data and data.get("found")):
+                logger.info(f"Zoom Refine: VLM 在局部截图中未找到元素，降级使用粗略坐标")
+                return rough_css_x, rough_css_y, 0.0
+
+            zoom_coords = data.get("coordinates", {})
+            zoom_x = int(zoom_coords.get("x", 0))
+            zoom_y = int(zoom_coords.get("y", 0))
+            confidence = float(data.get("confidence", 0.0))
+
+            # ── Step 6: 坐标反算 ──
+            # 6a. 放大图坐标 → canvas 偏移去除 → 裁剪图坐标（物理像素）
+            local_x = (zoom_x - paste_x) / ratio   # 裁剪图内的物理像素坐标
+            local_y = (zoom_y - paste_y) / ratio
+
+            # 6b. 裁剪图坐标 → 全图物理像素坐标
+            global_px_x = crop_x1 + local_x
+            global_px_y = crop_y1 + local_y
+
+            # 6c. 全图物理像素坐标 → CSS viewport 逻辑像素
+            refined_css_x = int(global_px_x / scale_x)
+            refined_css_y = int(global_px_y / scale_y)
+
+            # ── Step 7: 边界保护 ──
+            refined_css_x = max(0, min(vw, refined_css_x))
+            refined_css_y = max(0, min(vh, refined_css_y))
+
+            # 应用全局自愈偏移
+            refined_css_x += self.GLOBAL_OFFSET_X
+            refined_css_y += self.GLOBAL_OFFSET_Y
+
+            offset_from_rough = ((refined_css_x - rough_css_x)**2 + (refined_css_y - rough_css_y)**2) ** 0.5
+            print_agent(
+                "vision",
+                f"  🔬 二阶精修完成: 粗略({rough_css_x},{rough_css_y}) → "
+                f"精准({refined_css_x},{refined_css_y}) "
+                f"Δ={offset_from_rough:.0f}px 置信度={confidence:.0%}"
+            )
+            return refined_css_x, refined_css_y, confidence
+
+        except Exception as e:
+            logger.warning(f"Zoom Refine 失败: {e}，降级使用粗略坐标")
+            return rough_css_x, rough_css_y, 0.0
+        finally:
+            # 清理全图截图（局部截图保留用于 debug）
+            try:
+                png_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
 
 
     def _image_to_base64(self, image_path: str) -> str:
