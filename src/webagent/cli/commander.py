@@ -6,15 +6,13 @@ CLI 命令行交互模块
 from __future__ import annotations
 import argparse
 import asyncio
-import sys
-from typing import Any
 
-from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.markdown import Markdown
 
+from webagent.utils.config import get_config
 from webagent.utils.logger import print_banner, console, setup_logger
 from webagent.utils.llm import get_provider_info
 

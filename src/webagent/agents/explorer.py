@@ -16,7 +16,8 @@ from webagent.knowledge.models import (
 from webagent.knowledge.store import KnowledgeStore
 from webagent.prompt_engine.engine import PromptEngine
 from webagent.utils.logger import get_logger, print_agent, print_success, print_warning
-from webagent.utils.llm import get_config, get_llm
+from webagent.utils.config import get_config
+from webagent.utils.llm import get_llm
 
 logger = get_logger("webpilot.agents.explorer")
 
@@ -188,6 +189,13 @@ class ExplorerAgent:
             # BFS 扫描
             queue = [(target_url, 0)]  # (url, depth)
             visited = set()
+
+            # ── 自动发现 sitemap.xml / robots.txt ──
+            extra_urls = await self._discover_sitemap_urls(page, site.base_url)
+            if extra_urls:
+                print_agent("explorer", f"🗺️ 从 sitemap/robots.txt 发现 {len(extra_urls)} 个额外URL")
+                for eu in extra_urls:
+                    queue.append((eu, 1))
 
             while queue and len(visited) < max_pages:
                 url, depth = queue.pop(0)
@@ -380,7 +388,11 @@ class ExplorerAgent:
     async def _extract_navigation(self, page) -> list[NavLink]:
         """提取导航链接"""
         nav_links = []
-        links = await page.query_selector_all("nav a, .sidebar a, .menu a, header a")
+        links = await page.query_selector_all(
+            "nav a, .sidebar a, .menu a, header a, "
+            "footer a, [role='navigation'] a, .breadcrumb a, "
+            ".nav a, .navbar a, .drawer a"
+        )
 
         for link in links:
             try:
@@ -461,6 +473,47 @@ class ExplorerAgent:
         # 提取站点名称
         if not site.site_name and result_str:
             site.site_name = result_str[:100]
+
+    async def _discover_sitemap_urls(self, page, base_url: str) -> list[str]:
+        """从 sitemap.xml 和 robots.txt 自动发现额外的 URL"""
+        import re as _re
+        discovered = set()
+
+        # 1. 尝试 /sitemap.xml
+        try:
+            response = await page.goto(f"{base_url}/sitemap.xml", wait_until="domcontentloaded", timeout=8000)
+            if response and response.ok:
+                content = await page.content()
+                # 提取 <loc>...</loc> 中的 URL
+                locs = _re.findall(r"<loc>\s*(.*?)\s*</loc>", content)
+                for loc in locs:
+                    if loc.startswith(base_url):
+                        discovered.add(loc.split("?")[0])
+                logger.info(f"sitemap.xml: 发现 {len(locs)} 个URL")
+        except Exception as e:
+            logger.debug(f"sitemap.xml 不可用: {e}")
+
+        # 2. 尝试 /robots.txt，提取 Sitemap 和 Allow 路径
+        try:
+            response = await page.goto(f"{base_url}/robots.txt", wait_until="domcontentloaded", timeout=8000)
+            if response and response.ok:
+                content = await page.content()
+                # 提取 Sitemap: 行
+                sitemaps = _re.findall(r"Sitemap:\s*(\S+)", content, _re.IGNORECASE)
+                for sm_url in sitemaps:
+                    if sm_url.startswith(base_url):
+                        discovered.add(sm_url)
+                # 提取 Allow: 行
+                allows = _re.findall(r"Allow:\s*(\S+)", content, _re.IGNORECASE)
+                for path in allows:
+                    if path.startswith("/"):
+                        discovered.add(f"{base_url}{path}")
+                logger.info(f"robots.txt: 发现 {len(sitemaps)} 个Sitemap + {len(allows)} 个Allow路径")
+        except Exception as e:
+            logger.debug(f"robots.txt 不可用: {e}")
+
+        # 最多返回 30 个，避免爆炸
+        return list(discovered)[:30]
 
     async def scan_single_page(self, url: str) -> PageKnowledge:
         """扫描单个页面（快速模式）"""

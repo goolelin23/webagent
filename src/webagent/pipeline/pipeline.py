@@ -219,6 +219,31 @@ class ActionPipeline:
         self._action_log.append(result)
         return result
 
+    async def _safe_locator(self, selector: str, timeout: int = 10000):
+        """
+        安全定位器：当选择器匹配多个元素时自动降级到 .first
+        避免 Playwright strict mode violation 导致整个步骤崩溃
+        """
+        locator = self.page.locator(selector)
+        count = await locator.count()
+        if count == 0:
+            raise ValueError(f"元素未找到: {selector}")
+        if count > 1:
+            logger.warning(
+                f"选择器 [{selector}] 匹配到 {count} 个元素，自动选取第一个可见元素"
+            )
+            # 尝试找到第一个可见的元素
+            for i in range(count):
+                nth = locator.nth(i)
+                try:
+                    if await nth.is_visible():
+                        return nth
+                except Exception:
+                    continue
+            # 所有元素都不可见，返回第一个
+            return locator.first
+        return locator
+
     async def _execute_action(self, step: ExecutionStep):
         """执行具体的页面操作"""
         action = step.action
@@ -230,23 +255,23 @@ class ActionPipeline:
             await self.page.goto(target, wait_until="domcontentloaded", timeout=timeout)
 
         elif action == "click":
-            locator = self.page.locator(target)
+            locator = await self._safe_locator(target, timeout)
             await locator.wait_for(state="visible", timeout=timeout)
             await locator.click(timeout=timeout)
 
         elif action == "fill":
-            locator = self.page.locator(target)
+            locator = await self._safe_locator(target, timeout)
             await locator.wait_for(state="visible", timeout=timeout)
             await locator.click(click_count=3, timeout=timeout)
             await self.page.keyboard.press("Backspace")
             await locator.fill(value)
 
         elif action == "select":
-            locator = self.page.locator(target)
+            locator = await self._safe_locator(target, timeout)
             await locator.select_option(value, timeout=timeout)
 
         elif action == "check":
-            locator = self.page.locator(target)
+            locator = await self._safe_locator(target, timeout)
             await locator.check(timeout=timeout)
 
         elif action == "wait":
@@ -257,7 +282,7 @@ class ActionPipeline:
 
         elif action == "scroll":
             if target:
-                locator = self.page.locator(target)
+                locator = await self._safe_locator(target, timeout)
                 await locator.scroll_into_view_if_needed()
             else:
                 await self.page.evaluate("window.scrollBy(0, 300)")
@@ -267,14 +292,14 @@ class ActionPipeline:
             await self.page.screenshot(path=path)
 
         elif action == "assert":
-            locator = self.page.locator(target)
+            locator = await self._safe_locator(target, timeout)
             text = await locator.text_content()
             if value and value not in (text or ""):
                 raise AssertionError(f"断言失败: 期望包含 '{value}', 实际 '{text}'")
 
         elif action == "type":
             # 模拟逐字输入（适用于某些输入框）
-            locator = self.page.locator(target)
+            locator = await self._safe_locator(target, timeout)
             await locator.wait_for(state="visible", timeout=timeout)
             await locator.click()
             await self.page.keyboard.type(value, delay=50)
@@ -320,6 +345,7 @@ class ActionPipeline:
 
         else:
             raise ValueError(f"不支持的操作类型: {action}")
+
 
     async def _pre_validate(self, step: ExecutionStep) -> ValidationResult:
         """前置校验"""

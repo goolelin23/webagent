@@ -6,7 +6,7 @@
 from __future__ import annotations
 import json
 import re
-from typing import Any
+
 
 from webagent.knowledge.models import ExecutionPlan, ExecutionStep
 from webagent.knowledge.store import KnowledgeStore
@@ -144,12 +144,6 @@ class PlannerAgent:
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
         """调用 LLM"""
         try:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ]
-
-            # LangChain style invocation
             from langchain_core.messages import SystemMessage, HumanMessage
             lc_messages = [
                 SystemMessage(content=system_prompt),

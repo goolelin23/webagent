@@ -9,7 +9,6 @@ import asyncio
 import json
 import hashlib
 import time
-from typing import Any
 from pathlib import Path
 
 from webagent.knowledge.models import (
@@ -145,13 +144,13 @@ class ActiveLearner:
         if current_url != target_url:
             print_agent("active_learner", f"  ⏪ 回退页面: {target_url}")
             await page.goto(target_url, wait_until="domcontentloaded")
-            await asyncio.sleep(1)
+            await VisionEngine._wait_stable(page)
 
         # 恢复滚动位置
         await page.evaluate(
             f"window.scrollTo({snapshot['scroll_x']}, {snapshot['scroll_y']})"
         )
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.2)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 知识沉淀
@@ -220,6 +219,7 @@ class ActiveLearner:
             screenshot_after=screenshot_after,
             jury_score=jury_score,
             jury_reasoning=jury_reasoning,
+            timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"),
         )
         if current_embedding:
             learned.semantic_embedding = current_embedding
@@ -256,13 +256,54 @@ class ActiveLearner:
                      return
 
     def _get_learned_actions_for_url(self, site: SiteKnowledge, url: str) -> list[dict]:
-        """获取某个 URL 的已学习操作"""
+        """获取某个 URL 的已学习操作（支持模糊路径前缀匹配 + 置信度时间衰减）"""
+        from urllib.parse import urlparse
         url_pattern = url.split("?")[0]
-        return [
-            a for a in site.learned_actions
-            if a.get("page_url_pattern", "") == url_pattern
-            and a.get("confidence", 0) >= 0.5
-        ]
+        parsed = urlparse(url_pattern)
+        url_path = parsed.path.rstrip("/")
+
+        now = time.time()
+        results = []
+        for a in site.learned_actions:
+            pattern = a.get("page_url_pattern", "")
+            confidence = a.get("confidence", 0)
+
+            # 精确匹配或路径前缀匹配
+            pattern_parsed = urlparse(pattern)
+            pattern_path = pattern_parsed.path.rstrip("/")
+            exact_match = pattern == url_pattern
+            prefix_match = (
+                parsed.netloc == pattern_parsed.netloc
+                and url_path.startswith(pattern_path)
+                and len(pattern_path) > 1  # 避免根路径 / 匹配所有
+            )
+
+            if not (exact_match or prefix_match):
+                continue
+
+            # 置信度时间衰减：每过 7 天衰减 10%
+            ts_str = a.get("timestamp", "")
+            if ts_str:
+                try:
+                    from datetime import datetime
+                    ts = datetime.fromisoformat(ts_str).timestamp()
+                    days_elapsed = (now - ts) / 86400
+                    decay = max(0.3, 1.0 - 0.1 * (days_elapsed / 7))
+                    confidence *= decay
+                except Exception:
+                    pass
+
+            if confidence >= 0.4:
+                # 非精确匹配的结果置信度打折
+                if not exact_match:
+                    confidence *= 0.7
+                a_copy = dict(a)
+                a_copy["_effective_confidence"] = confidence
+                results.append(a_copy)
+
+        # 按有效置信度排序
+        results.sort(key=lambda x: x.get("_effective_confidence", 0), reverse=True)
+        return results
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 视觉驱动探索核心
@@ -478,7 +519,7 @@ class ActiveLearner:
             site.learned_actions = []
 
         visited_urls: set[str] = set()
-        explore_queue: list[tuple[str, int]] = [(target_url, 0)]  # (url, depth)
+        explore_queue: list[tuple[str, int, float]] = [(target_url, 0, 1.0)]  # (url, depth, curiosity_score)
         nodes_explored = 0
 
         async with async_playwright() as p:
@@ -495,7 +536,9 @@ class ActiveLearner:
             page = await context.new_page()
 
             while explore_queue and nodes_explored < max_nodes:
-                current_url, depth = explore_queue.pop(0)
+                # 按好奇心分数排序（贪婪策略，优先探索未见过的新页面）
+                explore_queue.sort(key=lambda x: x[2], reverse=True)
+                current_url, depth, curiosity = explore_queue.pop(0)
 
                 if depth >= max_depth:
                     continue
@@ -507,7 +550,7 @@ class ActiveLearner:
 
                 nodes_explored += 1
                 print_agent("active_learner", f"\n{'='*50}")
-                print_agent("active_learner", f"🔍 探索节点 [{nodes_explored}]: {current_url} (层级 {depth})")
+                print_agent("active_learner", f"🔍 探索节点 [{nodes_explored}]: {current_url} (层级 {depth}, 好奇心 {curiosity:.2f})")
                 print_agent("active_learner", f"{'='*50}")
 
                 try:
@@ -515,6 +558,23 @@ class ActiveLearner:
                     await VisionEngine._wait_stable(page)
                 except Exception as e:
                     logger.warning(f"无法导航到 {current_url}: {e}")
+                    continue
+
+                # 检测登录页面
+                is_login = await self._detect_login_page(page)
+                if is_login:
+                    auth_path = self.knowledge_store.get_auth_path(domain)
+                    if auth_path.exists():
+                        print_agent("active_learner", "🔑 检测到登录页，已有保存的凭证，跳过")
+                    else:
+                        print_warning("🔒 检测到登录页，无保存凭证，记录为受阻路径")
+                        site.blocked_paths.append(BlockedPath(
+                            url=current_url,
+                            state_id="login_detected",
+                            action_attempted="page_load",
+                            target_selector="",
+                            reason="login_required",
+                        ).to_dict())
                     continue
 
                 # 提取 DOM 知识（保留，用于知识库）
@@ -542,7 +602,8 @@ class ActiveLearner:
                 if current_page_url != current_url:
                     url_key_new = current_page_url.split("?")[0]
                     if url_key_new not in visited_urls:
-                        explore_queue.append((current_page_url, depth + 1))
+                        score = self._compute_curiosity_score(current_page_url, visited_urls, site)
+                        explore_queue.append((current_page_url, depth + 1, score))
 
                 # 从 DOM 提取到的导航链接也加入队列
                 if page.url == current_url:
@@ -552,7 +613,8 @@ class ActiveLearner:
                             for nav in page_know_latest.navigation[:10]:
                                 nav_url_key = nav.url.split("?")[0]
                                 if nav.url and nav_url_key not in visited_urls:
-                                    explore_queue.append((nav.url, depth + 1))
+                                    score = self._compute_curiosity_score(nav.url, visited_urls, site)
+                                    explore_queue.append((nav.url, depth + 1, score))
                     except Exception:
                         pass
 
@@ -574,3 +636,91 @@ class ActiveLearner:
             print_warning(f"⚠️ 记录了 {len(site.blocked_paths)} 个受阻路径，可使用 /resolve 让用户协助清理死角。")
 
         return site
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 好奇心驱动探索 & 登录检测
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _compute_curiosity_score(self, url: str, visited_urls: set[str], site: SiteKnowledge) -> float:
+        """
+        计算 URL 的好奇心探索分数 (0~1)
+
+        评分策略:
+          - 路径前缀越新颖 → 分数越高
+          - 已有大量已学习操作的页面 → 分数降低
+          - 深层路径 (path segment多) → 略微降低（防止陷入无限深层）
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
+        segments = [s for s in path.split("/") if s]
+
+        score = 1.0
+
+        # 1. 路径前缀新颖度 — 检查已访问的 URL 中有多少共享相同前缀
+        prefix_overlap_count = 0
+        for visited in visited_urls:
+            v_parsed = urlparse(visited)
+            v_path = v_parsed.path.rstrip("/")
+            # 共享至少 2 级路径前缀视为相似
+            if v_parsed.netloc == parsed.netloc:
+                v_segments = [s for s in v_path.split("/") if s]
+                common = 0
+                for a, b in zip(segments, v_segments):
+                    if a == b:
+                        common += 1
+                    else:
+                        break
+                if common >= 2:
+                    prefix_overlap_count += 1
+
+        # 相似页面越多，好奇心越低
+        if prefix_overlap_count > 0:
+            score -= min(0.4, prefix_overlap_count * 0.1)
+
+        # 2. 已学习操作密度 — 该页面已有操作越多，好奇心越低
+        url_pattern = url.split("?")[0]
+        known_count = sum(
+            1 for a in site.learned_actions
+            if a.get("page_url_pattern", "") == url_pattern
+        )
+        if known_count > 0:
+            score -= min(0.3, known_count * 0.05)
+
+        # 3. 深度惩罚 — 路径段数越多，略微降低
+        if len(segments) > 4:
+            score -= min(0.2, (len(segments) - 4) * 0.05)
+
+        return max(0.05, score)  # 最低保底 0.05
+
+    async def _detect_login_page(self, page) -> bool:
+        """
+        检测当前页面是否为登录页面
+
+        启发式策略:
+          - URL 包含 login/signin/auth
+          - 页面存在 password 类型输入框
+          - 页面标题包含登录相关关键词
+        """
+        url_lower = page.url.lower()
+        login_url_patterns = ["/login", "/signin", "/sign-in", "/auth", "/sso", "/cas/"]
+        if any(p in url_lower for p in login_url_patterns):
+            return True
+
+        try:
+            title = (await page.title()).lower()
+            login_title_keywords = ["登录", "login", "sign in", "signin", "log in"]
+            if any(kw in title for kw in login_title_keywords):
+                return True
+        except Exception:
+            pass
+
+        try:
+            password_count = await page.locator("input[type='password']").count()
+            if password_count > 0:
+                return True
+        except Exception:
+            pass
+
+        return False

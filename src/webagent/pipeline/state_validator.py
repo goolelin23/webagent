@@ -50,10 +50,23 @@ class StateValidator:
         """验证目标元素是否已准备就绪（可见且可交互）"""
         try:
             locator = self.page.locator(selector)
-            await locator.wait_for(state="visible", timeout=timeout)
+            count = await locator.count()
+            if count == 0:
+                return ValidationResult(
+                    passed=False,
+                    message=f"元素 {selector} 未找到",
+                    recoverable=True,
+                    recovery_action="scroll_and_retry",
+                )
+            # 多元素场景选取第一个可见元素，避免 strict mode 报错
+            target = locator.first if count > 1 else locator
+            if count > 1:
+                logger.debug(f"选择器 [{selector}] 匹配到 {count} 个元素，使用第一个")
+
+            await target.wait_for(state="visible", timeout=timeout)
 
             # 检查是否被其他元素遮挡
-            is_enabled = await locator.is_enabled()
+            is_enabled = await target.is_enabled()
             if not is_enabled:
                 return ValidationResult(
                     passed=False,
@@ -126,7 +139,9 @@ class StateValidator:
         """验证表单字段值是否正确填入"""
         try:
             locator = self.page.locator(selector)
-            actual_value = await locator.input_value()
+            # 多元素场景使用 .first 避免 strict mode 报错
+            target = locator.first if await locator.count() > 1 else locator
+            actual_value = await target.input_value()
             if actual_value == expected_value:
                 return ValidationResult(
                     passed=True,

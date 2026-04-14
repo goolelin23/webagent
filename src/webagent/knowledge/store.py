@@ -23,11 +23,20 @@ class KnowledgeStore:
         self.base_dir = base_dir or config.knowledge_base_path
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, SiteKnowledge] = {}
+        self._cache_mtime: dict[str, float] = {}  # 文件修改时间缓存
 
     def _domain_to_filename(self, domain: str) -> str:
         """将域名转换为文件名"""
         safe_name = domain.replace(":", "_").replace("/", "_").replace(".", "_")
         return f"{safe_name}.json"
+
+    def _filename_to_domain(self, filename: str) -> str:
+        """从文件名反推域名（快速路径，用于 list_sites 避免读取 JSON）"""
+        # 去掉 .json 后缀和 _auth 后缀
+        name = filename.replace(".json", "")
+        if name.endswith("_auth"):
+            return ""  # 跳过认证文件
+        return name.replace("_", ".")
 
     def _get_file_path(self, domain: str) -> Path:
         """获取域名对应的存储文件路径"""
@@ -53,20 +62,22 @@ class KnowledgeStore:
         Returns:
             站点知识对象，如果不存在则返回 None
         """
-        # 检查缓存
-        if domain in self._cache:
-            return self._cache[domain]
-
         file_path = self._get_file_path(domain)
         if not file_path.exists():
             logger.debug(f"知识库不存在: {domain}")
             return None
+
+        # 检查缓存是否仍然有效（基于文件修改时间）
+        current_mtime = file_path.stat().st_mtime
+        if domain in self._cache and self._cache_mtime.get(domain) == current_mtime:
+            return self._cache[domain]
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             site = SiteKnowledge.from_dict(data)
             self._cache[domain] = site
+            self._cache_mtime[domain] = current_mtime
             logger.info(f"加载知识库: {domain} ({len(site.pages)} 个页面)")
             return site
         except Exception as e:
@@ -86,6 +97,7 @@ class KnowledgeStore:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(site.to_dict(), f, ensure_ascii=False, indent=2)
             self._cache[site.domain] = site
+            self._cache_mtime[site.domain] = file_path.stat().st_mtime
             logger.info(f"保存知识库: {site.domain} ({len(site.pages)} 个页面)")
         except Exception as e:
             logger.error(f"保存知识库失败 [{site.domain}]: {e}")
@@ -110,15 +122,12 @@ class KnowledgeStore:
         self.save(site)
 
     def list_sites(self) -> list[str]:
-        """列出所有已扫描的站点域名"""
+        """列出所有已扫描的站点域名（快速路径：从文件名反推域名，避免读取JSON）"""
         sites = []
         for f in self.base_dir.glob("*.json"):
-            try:
-                with open(f, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                sites.append(data.get("domain", f.stem))
-            except Exception:
-                continue
+            domain = self._filename_to_domain(f.name)
+            if domain:  # 跳过空字符串（如 _auth.json）
+                sites.append(domain)
         return sites
 
     def get_site_summary(self, domain: str) -> str | None:
@@ -134,6 +143,7 @@ class KnowledgeStore:
         if file_path.exists():
             file_path.unlink()
             self._cache.pop(domain, None)
+            self._cache_mtime.pop(domain, None)
             logger.info(f"删除知识库: {domain}")
             return True
         return False

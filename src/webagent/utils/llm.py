@@ -135,12 +135,20 @@ def get_provider_info() -> str:
     return f"{provider} / {model if model else '(default)'} {has_key}"
 
 
+_embeddings_instance = None
+
+
 def get_embeddings():
-    """获取文本嵌入模型用于语义检索库"""
+    """获取文本嵌入模型用于语义检索库（单例缓存）"""
+    global _embeddings_instance
+    if _embeddings_instance is not None:
+        return _embeddings_instance
+
     config = get_config()
     try:
         from langchain_openai import OpenAIEmbeddings
-        return OpenAIEmbeddings(openai_api_key=config.llm.api_key, openai_api_base="https://api.openai.com/v1")
+        _embeddings_instance = OpenAIEmbeddings(openai_api_key=config.llm.api_key, openai_api_base="https://api.openai.com/v1")
+        return _embeddings_instance
     except Exception as e:
         import logging
         logging.warning(f"无法初始化Embedding模型: {e}。检索将回退无向量模式。")

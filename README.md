@@ -18,6 +18,9 @@ Driving interactions via web natural language instructions (Vision-Driven) inste
 - 🙋‍♂️ **Human-in-the-loop Tracker** — When automation is stuck, a real-time tracker captures your manual corrections (coordinates and features) as "golden samples" for self-learning.
 - 🛠️ **Turbo Execution Engine** — Optimized vision pipeline with JPEG compression and step merging, reducing latency by 70%.
 - 🛡️ **Safety Intercept** — Dynamically blocks risky actions (e.g., deletions) to prevent production environments from being polluted by AI exploration.
+- 🧭 **Autonomous Curiosity Exploration** — Employs a curiosity-scored BFS algorithm combined with heuristic `sitemap.xml`/`robots.txt` discovery to proactively map unseen pages.
+- ⚡ **Strict Mode Locator Safety** — Auto-degrades multi-matched interactive elements safely to prevent `strict mode` crashes, significantly enhancing runtime robustness.
+- 📉 **Memory Decay Mechanism** — Intelligently applies time-decay factors to learned trajectories, preventing stale automation logic from persisting.
 
 ---
 

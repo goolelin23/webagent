@@ -161,8 +161,12 @@ class ExecutorAgent:
                     print_warning("需要重新规划执行路径")
                 break
 
-            # 步骤间短暂延迟
-            await asyncio.sleep(0.5)
+            # 步骤间智能等待（DOM 稳定检测代替固定 sleep）
+            try:
+                from webagent.agents.vision_engine import VisionEngine
+                await VisionEngine._wait_stable(self._page, timeout=2000)
+            except Exception:
+                await asyncio.sleep(0.3)
 
         # 判断整体结果
         report.success = report.completed_steps == report.total_steps

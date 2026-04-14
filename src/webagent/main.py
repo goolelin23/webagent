@@ -2,7 +2,6 @@
 WebPilot AI (网页机长) — 程序入口
 """
 
-import sys
 from webagent.cli.commander import Commander
 
 

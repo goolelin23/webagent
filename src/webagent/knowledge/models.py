@@ -242,7 +242,7 @@ class WorkflowDef:
 class DeepAnalysis:
     """深度分析结果 — 扫描后由 LLM 分析生成"""
     page_skills: dict[str, list[dict]] = field(default_factory=dict)     # url → [PageSkillDef.to_dict()]
-    workflows: list[dict] = field(default_factory=dict)                  # [WorkflowDef.to_dict()]
+    workflows: list[dict] = field(default_factory=list)                  # [WorkflowDef.to_dict()]
     page_relationships: dict[str, list[str]] = field(default_factory=dict)  # url → [可到达的url]
     business_entities: list[str] = field(default_factory=list)              # ["采购订单", "供应商"]
     system_description: str = ""   # LLM 对系统的整体总结

@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 import json
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -263,7 +262,7 @@ class Dreamer:
 
         cleaned = 0
         for f in screenshots_dir.iterdir():
-            if f.is_file() and f.suffix == ".png":
+            if f.is_file() and f.suffix in (".png", ".jpg", ".jpeg"):
                 if str(f) not in referenced:
                     try:
                         f.unlink()
@@ -317,6 +316,10 @@ class Dreamer:
         after_count = len(site.learned_actions)
 
         # 记录梦境日志
+        # 将知识摘要写回到站点名称，供后续规划直接引用
+        if summary and not site.site_name:
+            site.site_name = summary[:100]
+
         report = DreamReport(
             domain=domain,
             before_count=before_count,
