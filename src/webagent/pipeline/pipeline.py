@@ -18,12 +18,6 @@ from webagent.utils.logger import get_logger, print_step, print_success, print_e
 
 logger = get_logger("webpilot.pipeline")
 
-
-class _VisionFallbackFailed(BaseException):
-    """选择器 + 视觉降级均失败，跳过重试直接进入人工介入（继承 BaseException 绕过 retry_manager 的 Exception 捕获）"""
-    pass
-
-
 @dataclass
 class ActionResult:
     """操作执行结果"""
@@ -116,28 +110,37 @@ class ActionPipeline:
                 logger.warning(f"技能 [{step.skill}] 执行失败: {e}")
 
         # ── 4. 执行操作（带重试） ──
-        # 执行链路: 选择器操作(重试) → 视觉降级(自动) → 询问用户(最后手段)
-        # 当视觉降级也失败时，_execute_action 会抛出 _VisionFallbackFailed
-        # 此时跳过无意义的重试循环，直接进入人工介入
-        vision_failed = False
+        # 执行链路:选择器操作(重试) → 视觉降级(自动) → 询问用户(最后手段)
         try:
             retry_result = await self.retry_manager.execute_with_retry(
                 operation=lambda: self._execute_action(step),
                 recovery_action=pre_validation.recovery_action if not pre_validation.passed else "",
                 description=f"步骤{step.step_id}: {step.description}",
             )
-        except _VisionFallbackFailed as vfe:
-            # 选择器 + 视觉都失败了，跳过重试直接进入人工介入
-            vision_failed = True
-            retry_result = RetryResult(
-                success=False,
-                attempts=1,
-                last_error=str(vfe),
-                should_replan=False,
-            )
-            logger.warning(f"选择器和视觉降级均失败，准备进入人工介入: {vfe}")
+        except Exception as e:
+            # this shouldn't happen unless execute_with_retry itself fails
+            retry_result = RetryResult(success=False, attempts=1, last_error=str(e))
 
-        # ── 人工介入兜底 (Human-in-the-loop) ──
+        # ── 5. 视觉降级 (Vision Fallback) ──
+        vision_failed = False
+        if not retry_result.success and step.action in ["click", "fill", "select", "check", "scroll", "type"]:
+            logger.warning("选择器操作彻底失败，正在尝试视觉智能降级定位...")
+            try:
+                # 只在重试彻底失败的最后时刻调用一回大模型视觉定位
+                vision_success = await self._execute_vision_action(step)
+                if vision_success:
+                    retry_result.success = True
+                    retry_result.last_error = ""
+                    retry_result.should_replan = False
+                    logger.info("视觉降级定位并操作成功！")
+                else:
+                    vision_failed = True
+                    retry_result.last_error = "视觉降级定位无法找到可操作的界面元素"
+            except Exception as e:
+                vision_failed = True
+                retry_result.last_error = f"视觉降级执行异常: {e}"
+
+        # ── 6. 人工介入兜底 (Human-in-the-loop) ──
         if not retry_result.success:
             try:
                 import sys
@@ -248,13 +251,16 @@ class ActionPipeline:
     async def _safe_locator(self, selector: str, timeout: int = 10000):
         """
         安全定位器：当选择器匹配多个元素时自动降级到 .first
-        当选择器匹配 0 个元素时返回 None，由调用方走视觉降级
+        当选择器匹配 0 个元素时等待直至超时，抛出异常
         """
         locator = self.page.locator(selector)
+        try:
+            # 尝试等待元素进入 DOM
+            await locator.first.wait_for(state="attached", timeout=timeout)
+        except Exception:
+            raise ValueError(f"DOM 选择器在 {timeout}ms 内未能找到元素: {selector}")
+            
         count = await locator.count()
-        if count == 0:
-            logger.warning(f"选择器 [{selector}] 未找到任何元素，将触发视觉降级")
-            return None
         if count > 1:
             logger.warning(
                 f"选择器 [{selector}] 匹配到 {count} 个元素，自动选取第一个可见元素"
@@ -307,8 +313,54 @@ class ActionPipeline:
 
         return None
 
+    async def _execute_vision_action(self, step: ExecutionStep) -> bool:
+        """执行视觉降级操作"""
+        action = step.action
+        target = step.target
+        value = step.value
+        
+        coords = await self._vision_locate(target)
+        if not coords:
+            return False
+            
+        from webagent.agents.vision_engine import VisionEngine
+        engine = VisionEngine()
+        
+        try:
+            if action == "click":
+                await engine._smart_click(self.page, coords["x"], coords["y"])
+            elif action == "fill":
+                await engine._smart_fill(self.page, coords["x"], coords["y"], value)
+            elif action == "select":
+                await self.page.mouse.click(coords["x"], coords["y"])
+                await VisionEngine._wait_stable(self.page)
+                option_coords = await self._vision_locate(f"下拉选项: {value}")
+                if option_coords:
+                    await self.page.mouse.click(option_coords["x"], option_coords["y"])
+                else:
+                    return False
+            elif action == "check":
+                await self.page.mouse.click(coords["x"], coords["y"])
+            elif action == "type":
+                await self.page.mouse.click(coords["x"], coords["y"])
+                await VisionEngine._wait_stable(self.page)
+                await self.page.keyboard.type(value, delay=50)
+            elif action == "scroll":
+                await self.page.mouse.move(coords["x"], coords["y"])
+                await self.page.mouse.wheel(0, 300)
+            elif action == "scroll_to_find":
+                await self.page.mouse.move(coords["x"], coords["y"])
+            else:
+                return False
+                
+            await VisionEngine._wait_stable(self.page)
+            return True
+        except Exception as e:
+            logger.warning(f"视觉降级操作执行异常: {e}")
+            return False
+
     async def _execute_action(self, step: ExecutionStep):
-        """执行具体的页面操作 — 选择器优先，找不到自动走视觉降级"""
+        """执行具体的页面操作 — 纯 DOM 选择器执行，失败将抛出异常并由重试管理器接管"""
         action = step.action
         target = step.target
         value = step.value
@@ -319,69 +371,23 @@ class ActionPipeline:
 
         elif action == "click":
             locator = await self._safe_locator(target, timeout)
-            if locator is not None:
-                await locator.wait_for(state="visible", timeout=timeout)
-                await locator.click(timeout=timeout)
-            else:
-                # 视觉降级：截图找元素 → 坐标点击
-                coords = await self._vision_locate(target)
-                if coords:
-                    from webagent.agents.vision_engine import VisionEngine
-                    engine = VisionEngine()
-                    await engine._smart_click(self.page, coords["x"], coords["y"])
-                    await VisionEngine._wait_stable(self.page)
-                else:
-                    raise _VisionFallbackFailed(f"元素未找到且视觉降级也无法定位: {target}")
+            await locator.wait_for(state="visible", timeout=timeout)
+            await locator.click(timeout=timeout)
 
         elif action == "fill":
             locator = await self._safe_locator(target, timeout)
-            if locator is not None:
-                await locator.wait_for(state="visible", timeout=timeout)
-                await locator.click(click_count=3, timeout=timeout)
-                await self.page.keyboard.press("Backspace")
-                await locator.fill(value)
-            else:
-                # 视觉降级：截图找输入框 → 坐标点击后键盘输入
-                coords = await self._vision_locate(target)
-                if coords:
-                    from webagent.agents.vision_engine import VisionEngine
-                    engine = VisionEngine()
-                    await engine._smart_fill(self.page, coords["x"], coords["y"], value)
-                    await VisionEngine._wait_stable(self.page)
-                else:
-                    raise _VisionFallbackFailed(f"输入框未找到且视觉降级也无法定位: {target}")
+            await locator.wait_for(state="visible", timeout=timeout)
+            await locator.click(click_count=3, timeout=timeout)
+            await self.page.keyboard.press("Backspace")
+            await locator.fill(value)
 
         elif action == "select":
             locator = await self._safe_locator(target, timeout)
-            if locator is not None:
-                await locator.select_option(value, timeout=timeout)
-            else:
-                # 视觉降级：先点开下拉框，再选
-                coords = await self._vision_locate(target)
-                if coords:
-                    await self.page.mouse.click(coords["x"], coords["y"])
-                    from webagent.agents.vision_engine import VisionEngine
-                    await VisionEngine._wait_stable(self.page)
-                    # 尝试用文本匹配选项
-                    option_coords = await self._vision_locate(f"下拉选项: {value}")
-                    if option_coords:
-                        await self.page.mouse.click(option_coords["x"], option_coords["y"])
-                        await VisionEngine._wait_stable(self.page)
-                else:
-                    raise _VisionFallbackFailed(f"下拉框未找到且视觉降级也无法定位: {target}")
+            await locator.select_option(value, timeout=timeout)
 
         elif action == "check":
             locator = await self._safe_locator(target, timeout)
-            if locator is not None:
-                await locator.check(timeout=timeout)
-            else:
-                coords = await self._vision_locate(target)
-                if coords:
-                    await self.page.mouse.click(coords["x"], coords["y"])
-                    from webagent.agents.vision_engine import VisionEngine
-                    await VisionEngine._wait_stable(self.page)
-                else:
-                    raise _VisionFallbackFailed(f"复选框未找到且视觉降级也无法定位: {target}")
+            await locator.check(timeout=timeout)
 
         elif action == "wait":
             if target:
@@ -392,15 +398,7 @@ class ActionPipeline:
         elif action == "scroll":
             if target:
                 locator = await self._safe_locator(target, timeout)
-                if locator is not None:
-                    await locator.scroll_into_view_if_needed()
-                else:
-                    coords = await self._vision_locate(target)
-                    if coords:
-                        await self.page.mouse.move(coords["x"], coords["y"])
-                        await self.page.mouse.wheel(0, 300)
-                    else:
-                        await self.page.evaluate("window.scrollBy(0, 300)")
+                await locator.scroll_into_view_if_needed()
             else:
                 await self.page.evaluate("window.scrollBy(0, 300)")
 
@@ -409,72 +407,36 @@ class ActionPipeline:
             await self.page.screenshot(path=path)
 
         elif action == "assert":
-            locator = await self._safe_locator(target, timeout)
-            if locator is not None:
+            try:
+                locator = await self._safe_locator(target, timeout)
                 text = await locator.text_content()
-            else:
-                # 视觉降级：对整个页面截图让 LLM 判断
+            except Exception:
                 text = await self.page.evaluate("document.body.innerText || ''")
             if value and value not in (text or ""):
                 raise AssertionError(f"断言失败: 期望包含 '{value}', 实际文本中未找到")
 
         elif action == "type":
-            # 模拟逐字输入（适用于某些输入框）
             locator = await self._safe_locator(target, timeout)
-            if locator is not None:
-                await locator.wait_for(state="visible", timeout=timeout)
-                await locator.click()
-                await self.page.keyboard.type(value, delay=50)
-            else:
-                coords = await self._vision_locate(target)
-                if coords:
-                    await self.page.mouse.click(coords["x"], coords["y"])
-                    from webagent.agents.vision_engine import VisionEngine
-                    await VisionEngine._wait_stable(self.page)
-                    await self.page.keyboard.type(value, delay=50)
-                else:
-                    raise _VisionFallbackFailed(f"输入框未找到且视觉降级也无法定位: {target}")
+            await locator.wait_for(state="visible", timeout=timeout)
+            await locator.click()
+            await self.page.keyboard.type(value, delay=50)
 
         elif action == "press":
             await self.page.keyboard.press(value or "Enter")
 
-        elif action == "click_xy":
-            # 视觉坐标点击
-            coords = json.loads(target) if isinstance(target, str) else target
-            x, y = int(coords.get("x", 0)), int(coords.get("y", 0))
-            await self.page.mouse.click(x, y)
-            from webagent.agents.vision_engine import VisionEngine
-            await VisionEngine._wait_stable(self.page)
-
         elif action == "scroll_to_find":
-            # 持续滚动 + 视觉查找
             max_scrolls = 10
             for _ in range(max_scrolls):
                 try:
                     locator = self.page.locator(target)
                     if await locator.count() > 0 and await locator.first.is_visible():
                         await locator.first.scroll_into_view_if_needed()
-                        break
+                        return
                 except Exception:
                     pass
-                # 视觉检查：每次滚动后用视觉模型找
-                coords = await self._vision_locate(target)
-                if coords:
-                    await self.page.mouse.move(coords["x"], coords["y"])
-                    break
                 await self.page.evaluate("window.scrollBy(0, 300)")
-                from webagent.agents.vision_engine import VisionEngine
-                await VisionEngine._wait_stable(self.page)
-
-        elif action == "vision_fill":
-            # 视觉填写：基于坐标点击输入框再输入
-            coords = json.loads(target) if isinstance(target, str) else target
-            x, y = int(coords.get("x", 0)), int(coords.get("y", 0))
-            await self.page.mouse.click(x, y, click_count=3)
-            from webagent.agents.vision_engine import VisionEngine
-            await VisionEngine._wait_stable(self.page)
-            await self.page.keyboard.press("Backspace")
-            await self.page.keyboard.type(value, delay=30)
+                await asyncio.sleep(0.3)
+            raise ValueError(f"滚动未找到元素: {target}")
 
         elif action == "back":
             await self.page.go_back(wait_until="domcontentloaded", timeout=timeout)
