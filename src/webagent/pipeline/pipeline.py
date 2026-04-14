@@ -317,23 +317,9 @@ class ActionPipeline:
                 desc = data.get("element_description", "")
                 
                 if llm_x > 0 and llm_y > 0 and confidence >= 0.5:
-                    # 读取由于截图压缩或 Mac Retina 屏造成的缩放比例，还原为真实 CSS 逻辑坐标
-                    try:
-                        from PIL import Image
-                        with Image.open(screenshot_path) as img:
-                            img_w, img_h = img.size
-                        viewport = await self.page.evaluate("() => { return { w: window.innerWidth, h: window.innerHeight }; }")
-                        vw, vh = int(viewport["w"]), int(viewport["h"])
-                        x = int((llm_x / img_w) * vw)
-                        y = int((llm_y / img_h) * vh)
-                        logger.debug(f"📐 坐标映射: LLM({llm_x},{llm_y}) [图片 {img_w}x{img_h}] -> CSS({x},{y}) [视口 {vw}x{vh}]")
-                    except Exception as e:
-                        logger.warning(f"坐标缩放转换异常: {e}，将使用原始坐标")
-                        x, y = llm_x, llm_y
-
-                    # [Self-Repair Mechanism] 应用全局自演进修复偏移量
-                    x += vision.GLOBAL_OFFSET_X
-                    y += vision.GLOBAL_OFFSET_Y
+                    # 将大模型相对于截图尺寸返回的坐标缩放回 Playwright 使用的纯正 CSS 逻辑视口像素
+                    # 该转换内部也会自动附加上一轮人类教学遗留的全局偏移纠偏
+                    x, y = await vision._scale_llm_coords(self.page, llm_x, llm_y, screenshot_path)
                     
                     # 记录此时的视觉换算出来的原始坐标 (用于稍后人工对抗验证)
                     self._last_vision_coords = {"x": x, "y": y}

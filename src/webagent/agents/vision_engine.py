@@ -417,6 +417,27 @@ class VisionEngine:
             logger.debug(f"截图压缩失败: {e}")
             return png_path
 
+    async def _scale_llm_coords(self, page: Page, llm_x: int, llm_y: int, screenshot_path: str) -> tuple[int, int]:
+        """将 LLM 相对于截图尺寸返回的坐标缩放回 Playwright 使用的纯正 CSS 逻辑视口像素，并应用全局自愈补偿"""
+        try:
+            from PIL import Image
+            with Image.open(screenshot_path) as img:
+                img_w, img_h = img.size
+            viewport = await page.evaluate("() => { return { w: window.innerWidth, h: window.innerHeight }; }")
+            vw, vh = int(viewport["w"]), int(viewport["h"])
+            x = int((llm_x / img_w) * vw)
+            y = int((llm_y / img_h) * vh)
+            logger.debug(f"📐 视觉底层坐标映射: LLM({llm_x},{llm_y}) [图片 {img_w}x{img_h}] -> CSS({x},{y}) [视口 {vw}x{vh}]")
+        except Exception as e:
+            logger.warning(f"坐标缩放转换异常: {e}，将使用原始坐标")
+            x, y = llm_x, llm_y
+
+        # 应用全局自演进修复偏移量
+        x += self.GLOBAL_OFFSET_X
+        y += self.GLOBAL_OFFSET_Y
+        return x, y
+
+
     def _image_to_base64(self, image_path: str) -> str:
         """将截图转为 base64"""
         with open(image_path, "rb") as f:
@@ -740,10 +761,18 @@ class VisionEngine:
 
             if data and "next_action" in data:
                 na = data["next_action"]
+                raw_x = int(na.get("coordinates", {}).get("x", 0))
+                raw_y = int(na.get("coordinates", {}).get("y", 0))
+                
+                if raw_x > 0 and raw_y > 0:
+                    x, y = await self._scale_llm_coords(page, raw_x, raw_y, screenshot_path)
+                else:
+                    x, y = raw_x, raw_y
+                
                 return VisionAction(
                     action_type=na.get("action_type", "click"),
                     target_description=na.get("target_description", ""),
-                    coordinates=na.get("coordinates", {"x": 0, "y": 0}),
+                    coordinates={"x": x, "y": y},
                     value=na.get("value", ""),
                     reasoning=na.get("reasoning", ""),
                     page_description=data.get("page_description", ""),
@@ -897,9 +926,16 @@ class VisionEngine:
 
             if data and data.get("found"):
                 coords = data.get("coordinates", {})
+                raw_x = int(coords.get("x", 0))
+                raw_y = int(coords.get("y", 0))
+                if raw_x > 0 and raw_y > 0:
+                    x, y = await self._scale_llm_coords(page, raw_x, raw_y, screenshot_path)
+                else:
+                    x, y = raw_x, raw_y
+                    
                 return (
-                    int(coords.get("x", 0)),
-                    int(coords.get("y", 0)),
+                    x,
+                    y,
                     float(data.get("confidence", 0.5)),
                 )
         except Exception as e:
