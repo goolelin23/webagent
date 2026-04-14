@@ -418,6 +418,7 @@ class ExecutionStep:
     timeout: int = 10000    # 超时时间(ms)
     optional: bool = False  # 是否可选步骤
     alternatives: list[dict] = field(default_factory=list)  # 备选操作
+    from_skill: str = ""    # 记录该步骤是由哪个技能插件生成的（可选）
 
     def to_dict(self) -> dict:
         return asdict(self)
