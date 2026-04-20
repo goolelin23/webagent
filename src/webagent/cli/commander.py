@@ -359,28 +359,30 @@ class Commander:
             console.print(f"  [bold red]深度扫描失败: {e}[/bold red]")
 
     async def _async_explore(self, url: str):
-        """🌲 全量自主探索 — 穷举页面所有交互元素，DFS 回溯遍历所有可能路径"""
+        """🌲 区域感知全量自主探索 — 穷举所有交互元素，DFS 回溯遍历所有路径，形成系统知识图谱"""
         from playwright.async_api import async_playwright
         from webagent.agents.page_explorer import PageExplorer
-        import json
-        from pathlib import Path
+        import time as _time
 
         config = get_config()
-        console.print(f"\n  [bold cyan]🌲 全量自主探索启动[/bold cyan]")
+        console.print(f"\n  [bold cyan]🌲 区域感知全量自主探索启动[/bold cyan]")
         console.print(f"  [dim]目标: {url}[/dim]")
-        console.print(f"  [dim]策略: 深度优先遍历所有可交互元素，回溯穷举探索树[/dim]\n")
+        console.print(f"  [dim]策略: 区域划分 → 区域内元素枚举 → BFS(区域) + DFS(跨页) → 持久化知识图谱[/dim]\n")
 
-        # 参数确认
-        max_depth_str = Prompt.ask("  最大递归深度", default="3")
-        max_elements_str = Prompt.ask("  每个页面最多探索几个元素", default="12")
-        max_nodes_str = Prompt.ask("  全局最多探索多少个页面状态", default="60")
+        max_depth_str    = Prompt.ask("  最大递归深度（建议2-4）", default="3")
+        max_elems_str    = Prompt.ask("  每个区域最多探索元素数", default="8")
+        max_nodes_str    = Prompt.ask("  全局最多节点数（页面状态上限）", default="60")
+        output_dir       = Prompt.ask("  探索结果输出目录", default="exploration_output")
+        resume_path      = Prompt.ask("  断点续探路径（留空则全新开始）", default="")
 
         try:
-            max_depth = int(max_depth_str)
-            max_elements = int(max_elements_str)
-            max_nodes = int(max_nodes_str)
+            max_depth  = int(max_depth_str)
+            max_elems  = int(max_elems_str)
+            max_nodes  = int(max_nodes_str)
         except ValueError:
-            max_depth, max_elements, max_nodes = 3, 12, 60
+            max_depth, max_elems, max_nodes = 3, 8, 60
+
+        resume_graph_path = resume_path if resume_path else None
 
         try:
             async with async_playwright() as p:
@@ -391,25 +393,26 @@ class Commander:
                 console.print(f"  [dim]正在导航到目标页面...[/dim]")
                 await page.goto(url, wait_until="domcontentloaded", timeout=20000)
 
-                explorer = PageExplorer()
-                report = await explorer.explore(
+                explorer = PageExplorer(output_dir=output_dir)
+                await explorer.explore(
                     page=page,
                     max_depth=max_depth,
-                    max_elements_per_page=max_elements,
+                    max_elements_per_region=max_elems,
                     max_total_nodes=max_nodes,
+                    resume_graph_path=resume_graph_path,
                 )
 
-                # 保存报告
-                import time
-                report_path = f"exploration_report_{int(time.time())}.json"
-                explorer.save_report(report_path)
-                console.print(f"\n  [green]✅ 探索完成！报告已保存到: {report_path}[/green]")
+                console.print(f"\n  [green]✅ 探索完成！结果已保存到目录: {output_dir}/[/green]")
+                console.print(f"  [dim]  - exploration_graph.json （知识图谱，可断点续探）[/dim]")
+                console.print(f"  [dim]  - exploration_report.md  （可读探索报告）[/dim]")
 
                 await browser.close()
 
         except Exception as e:
             console.print(f"  [bold red]全量探索失败: {e}[/bold red]")
-            logger.exception("全量探索异常")
+            if logger:
+                logger.exception("全量探索异常")
+
 
     async def _async_resolve(self, domain: str):
         """异步执行人工解决阻碍"""
