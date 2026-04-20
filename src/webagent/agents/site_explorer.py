@@ -390,7 +390,33 @@ class SiteExplorer:
                 edge.to_node = new_url if url_after != url_before else ""
                 self._edges.append(edge)
 
+                # 若点击后页面未跳转但内容变化（展开菜单/下拉）→ 立即补扫新元素
+                if outcome == "content_changed" and url_after == url_before:
+                    original_descs = {e.description for e in elements_sorted}
+                    expanded = await self._scan_expanded_elements(page, original_descs)
+                    if expanded:
+                        print_agent(
+                            "site_explorer",
+                            f"    🌿 展开后发现 {len(expanded)} 个新元素，立即探索"
+                        )
+                        for exp_elem in expanded[:5]:  # 最多继续探索5个展开项
+                            snap2 = await self._snapshot(page)
+                            url2 = page.url
+                            ok2 = await self._click_element(page, exp_elem, ss_path)
+                            if ok2:
+                                await VisionEngine._wait_stable(page)
+                                new_url2 = page.url
+                                if new_url2 != url2 and self._is_same_origin(new_url2):
+                                    norm2 = self._normalize_url(new_url2)
+                                    if norm2 not in self._queued_urls:
+                                        self._queued_urls.add(norm2)
+                                        self._queue.append((new_url2, depth + 1, node_id))
+                                        print_agent("site_explorer", f"      ➕ 子菜单页面入队: {new_url2[:55]}")
+                                node.elements_explored += 1
+                            await self._restore(page, snap2)
+
                 # 回退到点击前
+
                 await self._restore(page, snapshot)
 
             # 节点存档
@@ -432,52 +458,207 @@ class SiteExplorer:
     # ── 元素发现 ──────────────────────────────────────────
 
     async def _discover_elements(self, page: Page, screenshot_path: str) -> list[DiscoveredElement]:
-        """VLM 一次性从截图中提取所有可交互元素，并完成坐标换算"""
+        """
+        双轨融合元素发现 — 保证尽量完整识别页面所有可交互元素
+
+        两条轨道:
+        Track A: DOM 精确枚举     用 querySelectorAll 从 DOM 中找到所有真实可点击元素
+                                  -> 坐标 100% 准确，不依赖 VLM 猜测
+        Track B: VLM 语义标注     在 SOM 截图中识别，补充 DOM 可能漏掉的动态/Canvas 元素
+                                  -> 描述更好，区域感知更准
+
+        滚动覆盖:
+        对超过视口高度的页面，分 viewport 高度段截图识别，确保折叠区域被扫描
+
+        融合策略: DOM 元素为基础（保证 Y 坐标精确），VLM 结果去重补充
+        """
+        from PIL import Image
+
+        vp = await page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight, scrollH: document.body.scrollHeight})")
+        vw, vh = int(vp["w"]), int(vp["h"])
+        scroll_h = int(vp.get("scrollH", vh))
+
+        all_elements: list[DiscoveredElement] = []
+        fingerprints: set[str] = set()  # 去重指纹（描述+坐标）
+
+        # ─────────────────────────────────────────
+        # Track A: DOM 精确枚举（滚动全页面）
+        # ─────────────────────────────────────────
         try:
-            response = await self.vision._call_vision_llm(DISCOVER_ELEMENTS_PROMPT, [screenshot_path])
-            data = self.vision._extract_json(response)
-            if not data or "elements" not in data:
-                return []
+            dom_elements = await page.evaluate("""
+            () => {
+                const SKIP_KEYWORDS = ['退出', '注销', '删除', 'logout', 'delete', 'remove', 'sign out'];
+                const results = [];
+                const seen = new Set();
+                
+                // 抓取所有潜在可交互元素
+                const selectors = [
+                    'a[href]',
+                    'button:not([disabled])',
+                    'input:not([disabled]):not([type="hidden"])',
+                    'select:not([disabled])',
+                    'textarea:not([disabled])',
+                    '[role="button"]:not([disabled])',
+                    '[role="tab"]',
+                    '[role="menuitem"]',
+                    '[role="option"]',
+                    '[onclick]',
+                    '[data-action]',
+                    '[data-href]',
+                    'label[for]',
+                ];
+                
+                const allEls = document.querySelectorAll(selectors.join(','));
+                
+                for (const el of allEls) {
+                    const rect = el.getBoundingClientRect();
+                    // 过滤不可见 / 尺寸太小的元素
+                    if (rect.width < 4 || rect.height < 4) continue;
+                    if (el.offsetParent === null && el.tagName !== 'BODY') continue;
+                    
+                    // 计算在整个文档中的绝对坐标（不是视口相对）
+                    const absX = Math.round(rect.left + rect.width / 2);
+                    const absY = Math.round(rect.top + window.scrollY + rect.height / 2);
+                    
+                    const key = `${absX}|${absY}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    
+                    // 提取描述文字
+                    const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || el.getAttribute('alt') || el.tagName).trim().substring(0, 60);
+                    
+                    // 过滤危险操作
+                    if (SKIP_KEYWORDS.some(k => text.toLowerCase().includes(k))) continue;
+                    
+                    // 判断元素类型
+                    const tag = el.tagName.toLowerCase();
+                    const role = el.getAttribute('role') || '';
+                    let elemType = 'other';
+                    if (tag === 'a') elemType = 'link';
+                    else if (tag === 'button' || role === 'button') elemType = 'button';
+                    else if (tag === 'input') elemType = 'input';
+                    else if (tag === 'select') elemType = 'select';
+                    else if (tag === 'textarea') elemType = 'input';
+                    else if (role === 'tab') elemType = 'tab';
+                    else if (role === 'menuitem' || role === 'option') elemType = 'menu';
+                    
+                    // 判断所属区域（简单启发式）
+                    let region = 'content';
+                    const headersAndNavs = el.closest('header, nav, [role="navigation"]');
+                    const sidebar = el.closest('aside, [role="complementary"], .sidebar, .side-menu, .nav-sidebar');
+                    const toolbar = el.closest('[class*="toolbar"], [class*="tool-bar"], [class*="action-bar"]');
+                    const footer = el.closest('footer, [role="contentinfo"]');
+                    if (headersAndNavs) region = 'nav';
+                    else if (sidebar) region = 'sidebar';
+                    else if (toolbar) region = 'toolbar';
+                    else if (footer) region = 'footer';
+                    
+                    results.push({
+                        text,
+                        elemType,
+                        region,
+                        // css_x 是视口坐标（相对当前滚动位置）
+                        css_x: Math.round(rect.left + rect.width / 2),
+                        css_y: Math.round(rect.top + rect.height / 2),  // 视口坐标
+                        abs_y: absY,  // 文档绝对 Y
+                        tagName: el.tagName,
+                    });
+                }
+                return results;
+            }
+            """)
 
-            # 读取截图尺寸与视口大小，用于坐标换算
-            from PIL import Image
-            with Image.open(screenshot_path) as img:
-                img_w, img_h = img.size
-            vp = await page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight})")
-            vw, vh = int(vp["w"]), int(vp["h"])
+            for raw in dom_elements:
+                cx, cy = int(raw.get("css_x", 0)), int(raw.get("css_y", 0))
+                abs_y = int(raw.get("abs_y", cy))
+                if cx <= 0:
+                    continue
+                desc = raw.get("text", "")[:50] or f"{raw.get('tagName','?')} @ {cx},{abs_y}"
+                fp = f"{desc[:20]}_{cx}_{cy}"
+                if fp in fingerprints:
+                    continue
+                fingerprints.add(fp)
+                all_elements.append(DiscoveredElement(
+                    elem_id=f"dom_{len(all_elements)+1}",
+                    description=desc,
+                    elem_type=raw.get("elemType", "other"),
+                    css_x=max(0, min(vw, cx)),
+                    css_y=max(0, min(vh, cy)),
+                    region_name=raw.get("region", "content"),
+                    priority=5 if raw.get("region") in ("nav", "sidebar") else 3,
+                ))
 
-            result = []
-            for raw in data["elements"]:
-                img_x = int(raw.get("x", 0))
-                img_y = int(raw.get("y", 0))
-                if img_x <= 0 and img_y <= 0:
+            logger.debug(f"DOM Track: 找到 {len(all_elements)} 个元素")
+        except Exception as e:
+            logger.warning(f"DOM 枚举失败: {e}")
+
+        # ─────────────────────────────────────────
+        # Track B: VLM 语义识别（包含滚动扫描）
+        # ─────────────────────────────────────────
+        # 分段滚动截图：确保页面折叠区域也被扫描
+        scroll_positions = [0]  # 从顶部开始
+        overlap = int(vh * 0.15)  # 重叠区域，避免漏掉边界元素
+        step = vh - overlap
+        pos = step
+        while pos < scroll_h and len(scroll_positions) < 4:  # 最多滚4屏
+            scroll_positions.append(pos)
+            pos += step
+
+        for scroll_y in scroll_positions:
+            try:
+                if scroll_y > 0:
+                    await page.evaluate(f"window.scrollTo(0, {scroll_y})")
+                    await asyncio.sleep(0.3)
+
+                seg_ss = await self.vision._screenshot(page, f"scroll_{scroll_y}_{int(time.time())}", draw_som=True)
+
+                response = await self.vision._call_vision_llm(DISCOVER_ELEMENTS_PROMPT, [seg_ss])
+                data = self.vision._extract_json(response)
+                if not data or "elements" not in data:
                     continue
 
-                # 坐标换算：截图像素 → CSS 逻辑像素（含全局偏移修复）
-                css_x, css_y = await self.vision._scale_llm_coords(page, img_x, img_y, screenshot_path)
-                css_x = max(0, min(vw, css_x))
-                css_y = max(0, min(vh, css_y))
+                with Image.open(seg_ss) as img:
+                    img_w, img_h = img.size
 
-                result.append(DiscoveredElement(
-                    elem_id=str(raw.get("id", f"auto_{len(result)+1}")),
-                    description=raw.get("description", ""),
-                    elem_type=raw.get("type", "other"),
-                    css_x=css_x,
-                    css_y=css_y,
-                    selector_hint=raw.get("selector_hint", ""),
-                    region_name=raw.get("region", "other"),
-                    priority=int(raw.get("priority", 3)),
-                ))
-            return result
+                for raw in data["elements"]:
+                    img_x = int(raw.get("x", 0))
+                    img_y = int(raw.get("y", 0))
+                    if img_x <= 0 and img_y <= 0:
+                        continue
+                    # 坐标换算 + 加回滚动偏移
+                    css_x, css_y_viewport = await self.vision._scale_llm_coords(page, img_x, img_y, seg_ss)
+                    css_y_doc = css_y_viewport + scroll_y  # 换算为文档坐标
+                    # 使用视口坐标用于点击（需在视口内）
+                    click_y = max(0, min(vh, css_y_viewport))
+                    desc = raw.get("description", "")[:50]
+                    fp = f"{desc[:20]}_{css_x}_{click_y}"
+                    if fp in fingerprints:
+                        continue
+                    fingerprints.add(fp)
+                    all_elements.append(DiscoveredElement(
+                        elem_id=str(raw.get("id", f"vlm_{len(all_elements)+1}")),
+                        description=desc,
+                        elem_type=raw.get("type", "other"),
+                        css_x=max(0, min(vw, css_x)),
+                        css_y=click_y,
+                        selector_hint=raw.get("selector_hint", ""),
+                        region_name=raw.get("region", "other"),
+                        priority=int(raw.get("priority", 3)),
+                    ))
+            except Exception as e:
+                logger.debug(f"VLM 滚动段扫描失败 (y={scroll_y}): {e}")
 
-        except Exception as e:
-            logger.warning(f"元素发现失败: {e}")
-            return []
+        # 滚回顶部
+        await page.evaluate("window.scrollTo(0, 0)")
+
+        logger.debug(f"双轨融合: 共发现 {len(all_elements)} 个可交互元素")
+        return all_elements
+
 
     # ── 点击执行 ──────────────────────────────────────────
 
     async def _click_element(self, page: Page, elem: DiscoveredElement, screenshot_path: str) -> bool:
-        """带三阶坐标精修的元素点击"""
+        """带三阶坐标精修的元素点击，点击后若发现新展开元素则立即追加到返回列表"""
         from webagent.agents.vision_engine import VisionAction
         try:
             x, y = elem.css_x, elem.css_y
@@ -503,6 +684,56 @@ class SiteExplorer:
         except Exception as e:
             logger.debug(f"点击异常: {e}")
             return False
+
+    async def _scan_expanded_elements(self, page: Page, original_element_descs: set[str]) -> list[DiscoveredElement]:
+        """
+        展开后补扫 — 当一次点击展开了下拉菜单/手风琴时，
+        立即重新扫描 DOM 找到新冒出的可见元素，返回尚未见过的新元素
+        """
+        try:
+            vp = await page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight})")
+            vw, vh = int(vp["w"]), int(vp["h"])
+            new_dom = await page.evaluate("""
+            () => {
+                const results = [];
+                const els = document.querySelectorAll(
+                    'a[href], button:not([disabled]), [role="menuitem"], [role="option"], [role="treeitem"]'
+                );
+                for (const el of els) {
+                    const rect = el.getBoundingClientRect();
+                    // 只抓当前在视口内可见的元素
+                    if (rect.top < 0 || rect.bottom > window.innerHeight) continue;
+                    if (rect.width < 4 || rect.height < 4) continue;
+                    const text = (el.innerText || el.getAttribute('aria-label') || '').trim().substring(0, 50);
+                    if (!text) continue;
+                    results.push({
+                        text,
+                        css_x: Math.round(rect.left + rect.width/2),
+                        css_y: Math.round(rect.top + rect.height/2),
+                    });
+                }
+                return results;
+            }
+            """)
+            result = []
+            for raw in new_dom:
+                desc = raw.get("text", "")
+                if not desc or desc in original_element_descs:
+                    continue
+                cx, cy = int(raw.get("css_x", 0)), int(raw.get("css_y", 0))
+                result.append(DiscoveredElement(
+                    elem_id=f"expanded_{len(result)+1}",
+                    description=desc,
+                    elem_type="menu",
+                    css_x=max(0, min(vw, cx)),
+                    css_y=max(0, min(vh, cy)),
+                    region_name="sidebar",
+                    priority=5,  # 展开的子菜单优先级最高
+                ))
+            return result
+        except Exception as e:
+            logger.debug(f"展开补扫失败: {e}")
+            return []
 
     # ── 结果判断 ──────────────────────────────────────────
 
