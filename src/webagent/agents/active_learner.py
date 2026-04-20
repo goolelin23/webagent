@@ -567,14 +567,43 @@ class ActiveLearner:
                     if auth_path.exists():
                         print_agent("active_learner", "🔑 检测到登录页，已有保存的凭证，跳过")
                     else:
-                        print_warning("🔒 检测到登录页，无保存凭证，记录为受阻路径")
-                        site.blocked_paths.append(BlockedPath(
-                            url=current_url,
-                            state_id="login_detected",
-                            action_attempted="page_load",
-                            target_selector="",
-                            reason="login_required",
-                        ).to_dict())
+                        from rich.prompt import Prompt
+                        print_warning("🔒 检测到登录页，当前无保存凭证。")
+                        account = Prompt.ask("  请输入登录账号 (留空将其记录为受阻路径跳过)")
+                        if account:
+                            password = Prompt.ask("  请输入登录密码", password=True)
+                            print_agent("active_learner", "  🤖 正在自主执行登录...")
+                            goal = f"使用账号 '{account}' 和密码 '{password}' 登录系统。"
+                            action_history = []
+                            for step in range(5):
+                                action = await self.vision.perceive(page, goal, action_history)
+                                if action.is_dead_end: break
+                                await self.vision.execute_vision_action(page, action)
+                                await VisionEngine._wait_stable(page)
+                                action_history.append(f"{action.action_type} -> {action.target_description}")
+                                if not await self._detect_login_page(page):
+                                    print_success("  ✅ 自动登录成功，保存登录凭证并继续深度扫描...")
+                                    await context.storage_state(path=str(auth_path))
+                                    # 将新页面加入队列
+                                    if page.url != current_url:
+                                        url_key_new = page.url.split("?")[0]
+                                        if url_key_new not in visited_urls:
+                                            score = self._compute_curiosity_score(page.url, visited_urls, site)
+                                            explore_queue.append((page.url, depth, score))
+                                    break
+                            else:
+                                print_warning("  ⚠️ 自动登录未确信完成！")
+                                site.blocked_paths.append(BlockedPath(
+                                    url=current_url, state_id="login_detected_failed", action_attempted="auto_login", target_selector="", reason="login_failed"
+                                ).to_dict())
+                        else:
+                            site.blocked_paths.append(BlockedPath(
+                                url=current_url,
+                                state_id="login_detected",
+                                action_attempted="page_load",
+                                target_selector="",
+                                reason="login_required",
+                            ).to_dict())
                     continue
 
                 # 提取 DOM 知识（保留，用于知识库）

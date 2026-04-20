@@ -123,6 +123,12 @@ def get_llm() -> BaseChatModel:
             f"支持的提供商: openai, anthropic, gemini, qwen, openclaw"
         )
 
+    # 注入 provider 属性以兼容外部库（如 browser_use 的探测需求）
+    try:
+        setattr(_llm_instance, 'provider', provider)
+    except Exception:
+        object.__setattr__(_llm_instance, 'provider', provider)
+
     return _llm_instance
 
 

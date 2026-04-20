@@ -281,6 +281,34 @@ class SiteExplorer:
                 logger.warning(f"无法导航到 {target_url}: {e}")
                 continue
 
+            # 检测是否为登录页面
+            if await self._detect_login_page(page):
+                print_agent("site_explorer", "\n[bold yellow]🔒 检测到需要用户登录的页面[/bold yellow]")
+                from rich.prompt import Prompt
+                account = Prompt.ask("  请输入登录账号 (留空跳过自主登录)")
+                if account:
+                    password = Prompt.ask("  请输入登录密码", password=True)
+                    print_agent("site_explorer", "  🤖 正在自主帮用户操作登录，请稍候...")
+                    goal = f"使用账号 '{account}' 和密码 '{password}' 登录系统。"
+                    action_history = []
+                    for step in range(6):
+                        action = await self.vision.perceive(page, goal, action_history)
+                        if action.is_dead_end:
+                            break
+                        action_desc = f"{action.action_type} -> {action.target_description}"
+                        print_agent("site_explorer", f"    -> {action_desc}")
+                        await self.vision.execute_vision_action(page, action)
+                        await VisionEngine._wait_stable(page)
+                        action_history.append(action_desc)
+                        
+                        # 检测是否登录完成（判断是否还是登录页面）
+                        still_login = await self._detect_login_page(page)
+                        if not still_login:
+                            print_success("  ✅ 成功完成自主登录！继续探索...")
+                            break
+                    else:
+                        print_warning("  ⚠️ 登录过程似乎未完全成功或仍在同一页面，继续探索...")
+
             # 去重检查（状态哈希）
             state_hash = await self._compute_hash(page)
             if state_hash in self._visited:
@@ -888,6 +916,30 @@ class SiteExplorer:
             return t.strip() or page.url.split("/")[-1] or "untitled"
         except Exception:
             return "untitled"
+
+    async def _detect_login_page(self, page: Page) -> bool:
+        """检测当前页面是否为登录页面"""
+        url_lower = page.url.lower()
+        login_url_patterns = ["/login", "/signin", "/sign-in", "/auth", "/sso", "/cas/"]
+        if any(p in url_lower for p in login_url_patterns):
+            return True
+
+        try:
+            title = (await page.title()).lower()
+            login_title_keywords = ["登录", "login", "sign in", "signin", "log in"]
+            if any(kw in title for kw in login_title_keywords):
+                return True
+        except Exception:
+            pass
+
+        try:
+            password_count = await page.locator("input[type='password']").count()
+            if password_count > 0:
+                return True
+        except Exception:
+            pass
+
+        return False
 
     # ── 序列化 ───────────────────────────────────────────
 

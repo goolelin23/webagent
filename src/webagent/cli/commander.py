@@ -55,6 +55,7 @@ def create_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--upload", type=str, default="", help="上传/挂载本地前端代码(支持目录或ZIP)")
     scan_parser.add_argument("--depth", type=int, default=2, help="扫描深度 (默认2)")
     scan_parser.add_argument("--max-pages", type=int, default=50, help="最大页面数 (默认50)")
+    scan_parser.add_argument("--deep", action="store_true", help="是否执行视觉驱动的深度扫描 (利用大模型+视觉自验证)")
 
     # ── kb: 知识库管理 ──
     kb_parser = subparsers.add_parser("kb", help="知识库管理")
@@ -285,7 +286,11 @@ class Commander:
         if not target_url:
             console.print("  [bold red]错误: 必须提供 --url 或 --upload 之一[/bold red]")
             return
-        asyncio.run(self._async_scan(target_url, args.depth, args.max_pages))
+            
+        if getattr(args, "deep", False):
+            asyncio.run(self._async_scan_deep(target_url, depth=args.depth, max_pages=args.max_pages))
+        else:
+            asyncio.run(self._async_scan(target_url, args.depth, args.max_pages))
 
     def _kb_command(self, args):
         """处理 kb 子命令"""
@@ -385,11 +390,11 @@ class Commander:
         except Exception as e:
             console.print(f"  [bold red]扫描失败: {e}[/bold red]")
 
-    async def _async_scan_deep(self, url: str):
+    async def _async_scan_deep(self, url: str, depth: int = 3, max_pages: int = 50):
         """异步执行视觉驱动深度扫描"""
         orchestrator = self._get_orchestrator()
         try:
-            await orchestrator.scan_deep(url)
+            await orchestrator.scan_deep(url, depth=depth, max_pages=max_pages)
         except Exception as e:
             console.print(f"  [bold red]深度扫描失败: {e}[/bold red]")
 
