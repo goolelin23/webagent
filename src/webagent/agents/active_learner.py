@@ -365,8 +365,15 @@ class ActiveLearner:
 
             # 3. 死胡同检测
             if vision_action.is_dead_end:
+                from rich.prompt import Confirm
                 print_agent("active_learner", f"  🚫 到达死胡同: {vision_action.dead_end_reason}")
-                break
+                if Confirm.ask("  探索受阻 (死胡同)，是否需要人工介入解决？(Y/n)", default=True):
+                    print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
+                    input("  [按回车键让AI重新感知当前页面并继续探索...]")
+                    snapshot = await self._snapshot(page)
+                    continue
+                else:
+                    break
 
             # 3.1 沙盒危险隔离检测
             if getattr(vision_action, 'risk_level', 'safe') == 'dangerous':
@@ -389,8 +396,16 @@ class ActiveLearner:
                 await self._restore_snapshot(page, snapshot)
                 consecutive_failures += 1
                 if consecutive_failures >= max_consecutive_failures:
-                    print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，停止当前页面探索")
-                    break
+                    from rich.prompt import Confirm
+                    print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，探索受阻。")
+                    if Confirm.ask("  是否需要人工介入解决？(Y/n)", default=True):
+                        print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
+                        input("  [按回车键让AI重新感知当前页面并继续探索...]")
+                        consecutive_failures = 0
+                        snapshot = await self._snapshot(page)
+                        continue
+                    else:
+                        break
                 continue
 
             # 6. 等待页面响应（使用智能等待代替 sleep(1)）
@@ -483,8 +498,16 @@ class ActiveLearner:
                 consecutive_failures += 1
 
                 if consecutive_failures >= max_consecutive_failures:
-                    print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，停止当前页面探索")
-                    break
+                    from rich.prompt import Confirm
+                    print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，探索受阻。")
+                    if Confirm.ask("  是否需要人工介入解决？(Y/n)", default=True):
+                        print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
+                        input("  [按回车键让AI重新感知当前页面并继续探索...]")
+                        consecutive_failures = 0
+                        snapshot = await self._snapshot(page)
+                        continue
+                    else:
+                        break
 
         return successful_actions
 
