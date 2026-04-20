@@ -18,7 +18,11 @@
 - 🙋‍♂️ **人机协同自学习 (Human-in-the-loop Tracker)** — 当执行卡点时，通过实时物理轨道追踪（Tracker）捕获用户纠错点击的 X/Y 坐标与组件特征，将其作为黄金样本喂回 AI 纠错闭环。
 - 🛠️ **高性能执行引擎 (Turbo Execution)** — 全面优化视觉感知管线，通过截图压缩 (JPEG)、智能稳定探测 (MutationObserver) 和感知步骤合并，将操作延迟降低了 70%，效率提升 3~5 倍！
 - 🛡️ **沙盒防卫审计 (Safety Intercept)** — 风险动态拦截，一旦大模型意识到动作有破坏/写表单倾向，立马封禁死胡同路径，保障生产环境不被探索污染。
-- 🧭 **好奇心驱动探索 (Autonomous Exploration)** — 采用带好奇心评分的优先队列结合 `sitemap.xml`/`robots.txt` 智能嗅探，自动挖掘深度的隐蔽功能模块与全自动表单探测。
+- 🧭 **Web 全量自主探索 (SiteExplorer)** — 自动探索整个 Web 系统的每一个角落！基于 BFS 算法结合 DOM + VLM 双轨识别，突破同屏限制：
+  - **穷举验证**：支持单页多达 100+ 交互点的识别与记录。
+  - **视觉二阶精修 (Visual Zoom-In Refinement)**：若常规手段无法认出元素，立即截取局部高清图让大模型做物理语义确认与中心坐标吸附。
+  - **展开态补扫**：自动处理导航栏的二级菜单悬浮展开场景。
+  - **战果打标**：最终用物理画笔统一输出带有全页 SOM (Set-of-Mark) 红框与数字标签的高清图谱 `site_graph.json` 存档。
 - ⚡ **严格模式安全锁 (Strict Mode Safety)** — 为运行时定位器增加了多重匹配防御，当页面出现雷同元素时智能回滚至安全视角，彻底根除高频的 Strict Mode Validator 崩溃。
 - 📉 **记忆衰减算法 (Memory Decay)** — 引入基于时间的知识库衰减因子与模糊匹配降权，确保 Agent "忘掉"由于前端迭代而产生的过时操作记忆，轻装上阵。
 
@@ -87,9 +91,20 @@ LLM_BASE_URL=http://localhost:18789/v1  # 默认 OpenClaw 接口
 
 ## 📋 常用指令集
 
+### 🕸️ Web 全量自主探索 (SiteExplorer)
+通过 BFS 状态图遍历完整系统（点击每一个角落并还原）：
+```bash
+uv run webpilot /explore <网址>
+
+# 系统运行后：
+# 1. 抓取高达 100+ 可点元素 (DOM + 滚动拼接)
+# 2. 对于迷失对象，触发 Visual Zoom-In Refinement（视觉二阶放大精修）
+# 3. 生成最终的 `final_som.jpg` SOM全景打标图，并留存结构化图谱 site_graph.json
+```
+
 ### 视觉驱动探索
 ```bash
-# 启动视觉驱动深度扫描
+# 启动视觉驱动深度扫描 (旧版指令)
 uv run webpilot scan --url https://example.com --deep
 
 # 进入交互式机长模式
