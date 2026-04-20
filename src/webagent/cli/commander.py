@@ -128,6 +128,7 @@ class Commander:
         console.print("  [dim]输入自然语言指令，或使用以下命令:[/dim]")
         console.print("  [dim]  /scan <url>     — 扫描Web系统（自动深度分析）[/dim]")
         console.print("  [dim]  /scan-deep <url> — 👁️ 视觉驱动深度扫描（截图理解+自验证+自愈回退）[/dim]")
+        console.print("  [dim]  /explore <url>   — 🌲 全量自主探索（穷举所有交互元素 + DFS 回溯）[/dim]")
         console.print("  [dim]  /resolve <域名>  — 人工接管解决扫描中的阻碍点[/dim]")
         console.print("  [dim]  /replay <域名>   — 回放已学习的操作路径[/dim]")
         console.print("  [dim]  /dream <域名>    — 💤 梦境模式 (知识库自我整理清理)[/dim]")
@@ -172,6 +173,10 @@ class Commander:
                             arg = Prompt.ask("  请输入深度扫描目标URL")
                         console.print(f"  [cyan]目标URL设为: {arg}[/cyan]")
                         asyncio.run(self._async_scan_deep(arg))
+                    elif cmd == "/explore":
+                        if not arg:
+                            arg = Prompt.ask("  请输入要探索的目标页面URL")
+                        asyncio.run(self._async_explore(arg))
                     elif cmd == "/resolve":
                         if not arg:
                             arg = Prompt.ask("  请输入受阻站点域名")
@@ -352,6 +357,59 @@ class Commander:
             await orchestrator.scan_deep(url)
         except Exception as e:
             console.print(f"  [bold red]深度扫描失败: {e}[/bold red]")
+
+    async def _async_explore(self, url: str):
+        """🌲 全量自主探索 — 穷举页面所有交互元素，DFS 回溯遍历所有可能路径"""
+        from playwright.async_api import async_playwright
+        from webagent.agents.page_explorer import PageExplorer
+        import json
+        from pathlib import Path
+
+        config = get_config()
+        console.print(f"\n  [bold cyan]🌲 全量自主探索启动[/bold cyan]")
+        console.print(f"  [dim]目标: {url}[/dim]")
+        console.print(f"  [dim]策略: 深度优先遍历所有可交互元素，回溯穷举探索树[/dim]\n")
+
+        # 参数确认
+        max_depth_str = Prompt.ask("  最大递归深度", default="3")
+        max_elements_str = Prompt.ask("  每个页面最多探索几个元素", default="12")
+        max_nodes_str = Prompt.ask("  全局最多探索多少个页面状态", default="60")
+
+        try:
+            max_depth = int(max_depth_str)
+            max_elements = int(max_elements_str)
+            max_nodes = int(max_nodes_str)
+        except ValueError:
+            max_depth, max_elements, max_nodes = 3, 12, 60
+
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=config.browser.headless)
+                context = await browser.new_context(viewport={"width": 1280, "height": 800})
+                page = await context.new_page()
+
+                console.print(f"  [dim]正在导航到目标页面...[/dim]")
+                await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+
+                explorer = PageExplorer()
+                report = await explorer.explore(
+                    page=page,
+                    max_depth=max_depth,
+                    max_elements_per_page=max_elements,
+                    max_total_nodes=max_nodes,
+                )
+
+                # 保存报告
+                import time
+                report_path = f"exploration_report_{int(time.time())}.json"
+                explorer.save_report(report_path)
+                console.print(f"\n  [green]✅ 探索完成！报告已保存到: {report_path}[/green]")
+
+                await browser.close()
+
+        except Exception as e:
+            console.print(f"  [bold red]全量探索失败: {e}[/bold red]")
+            logger.exception("全量探索异常")
 
     async def _async_resolve(self, domain: str):
         """异步执行人工解决阻碍"""
