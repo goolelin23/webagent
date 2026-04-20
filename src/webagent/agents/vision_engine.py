@@ -21,6 +21,7 @@ from webagent.prompt_engine.templates.vision import (
     VISION_VERIFY_PROMPT,
     VISION_LOCATE_PROMPT,
     VISION_ZOOM_REFINE_PROMPT,
+    VISION_SOM_FALLBACK_PROMPT,
 )
 from webagent.utils.logger import get_logger, print_agent, print_warning
 from webagent.utils.llm import get_config, get_llm
@@ -259,6 +260,115 @@ JS_CLEAR_SOM = """
 }
 """
 
+JS_DRAW_MISSING_SOM = """
+(coords) => {
+    window.__som_nodes__ = window.__som_nodes__ || [];
+    let som_idx = document.querySelectorAll('[data-som-id]').length + 1;
+
+    // --- Helper: 深度元素获取 (支持 Shadow DOM) ---
+    const getDeepElement = (x, y, root = document) => {
+        let el = root.elementFromPoint(x, y);
+        if (el && el.shadowRoot) {
+            const inner = getDeepElement(x, y, el.shadowRoot);
+            return inner || el;
+        }
+        return el;
+    };
+
+    // --- Helper: 交互特性检查 ---
+    const isInteractive = (el) => {
+        if (!el) return false;
+        const tag = el.tagName.toLowerCase();
+        const role = el.getAttribute('role');
+        const style = window.getComputedStyle(el);
+        return (
+            ['button', 'a', 'input', 'select', 'textarea'].includes(tag) ||
+            ['button', 'link', 'menuitem', 'tab', 'checkbox'].includes(role) ||
+            style.cursor === 'pointer' ||
+            el.onclick !== null ||
+            (el.className && typeof el.className === 'string' && /btn|button|action|item/i.test(el.className))
+        );
+    };
+
+    // --- Helper: 向上溯源寻找“有意义”的容器 ---
+    const findInteractiveShell = (el) => {
+        let curr = el;
+        for (let i = 0; i < 5 && curr && curr !== document.body; i++) {
+            if (isInteractive(curr)) return curr;
+            curr = curr.parentElement;
+        }
+        return el;
+    };
+
+    for (let pt of coords) {
+        let bestTarget = getDeepElement(pt.x, pt.y);
+        let foundViaTrack = 'none';
+        
+        // --- Track A/B: 强化吸附 (文本 + 结构特征综合扫描) ---
+        const radius = 60;
+        const step = 20;
+        let candidates = [];
+
+        for (let dx = -radius; dx <= radius; dx += step) {
+            for (let dy = -radius; dy <= radius; dy += step) {
+                const el = getDeepElement(pt.x + dx, pt.y + dy);
+                if (!el || el === document.body) continue;
+
+                let score = 0;
+                const txt = (el.textContent || '').replace(/\s+/g, '').toLowerCase();
+                const desc = (pt.desc || '').toLowerCase().replace(/\s+/g, '');
+
+                // 评分机制
+                if (desc && txt && (desc.includes(txt) || txt.includes(desc)) && txt.length > 0 && txt.length < 30) {
+                    score += 100; // 文本命中
+                }
+                if (['svg', 'img', 'canvas'].includes(el.tagName.toLowerCase())) {
+                    score += 50; // 视觉素材命中
+                }
+                if (isInteractive(el)) {
+                    score += 40; // 交互属性命中
+                }
+
+                if (score > 0) {
+                    candidates.push({ el: el, score: score, dist: dx*dx + dy*dy });
+                }
+            }
+        }
+
+        if (candidates.length > 0) {
+            // 优先选高分，同分选最近
+            candidates.sort((a, b) => b.score - a.score || a.dist - b.dist);
+            bestTarget = candidates[0].el;
+        }
+
+        // --- 最终处理：向上找到真正的点击壳子 ---
+        const target = findInteractiveShell(bestTarget || document.body);
+        
+        if (target.hasAttribute('data-som-id') || target.closest('[data-som-id]')) continue;
+
+        const idStr = 'V' + som_idx++;
+        target.setAttribute('data-som-id', idStr);
+        
+        const rect = target.getBoundingClientRect();
+        const badge = document.createElement('div');
+        badge.textContent = idStr;
+        
+        let top = pt.y - 10;
+        let left = pt.x - 10;
+        if (rect.width > 0 && rect.height > 0) {
+            // 徽章防止遮挡：放在左上角内侧
+            top = Math.max(0, rect.top);
+            left = Math.max(0, rect.left);
+        }
+        
+        badge.style.cssText = `position:absolute;top:${top + window.scrollY}px;left:${left + window.scrollX}px;background:#3b82f6;color:white;padding:1px 4px;font-size:12px;font-weight:bold;z-index:2147483647;pointer-events:none;border-radius:3px;border:1px solid white;box-shadow: 0 2px 4px rgba(0,0,0,0.3);`;
+        
+        document.body.appendChild(badge);
+        window.__som_nodes__.push(badge);
+    }
+}
+"""
+
 
 
 @dataclass
@@ -368,6 +478,40 @@ class VisionEngine:
                     await asyncio.sleep(0.05)
             except Exception as e:
                 logger.debug(f"Draw SOM 失败: {e}")
+
+            # === 视觉兜底两段式标记 (Vision-based SOM Fallback) ===
+            try:
+                stage_png = str(self.screenshots_dir / f"stage1_{ts}.png")
+                await page.screenshot(path=stage_png, full_page=False)
+                
+                resp = await self._call_vision_llm(VISION_SOM_FALLBACK_PROMPT, [stage_png])
+                data = self._extract_json(resp)
+                
+                if data and "missing_elements" in data and len(data["missing_elements"]) > 0:
+                    vw = await page.evaluate("window.innerWidth")
+                    vh = await page.evaluate("window.innerHeight")
+                    coords = []
+                    for el in data["missing_elements"]:
+                        x = int(el.get("x_percent", 0) * vw)
+                        y = int(el.get("y_percent", 0) * vh)
+                        if x > 0 and y > 0:
+                            coords.append({"x": x, "y": y, "desc": el.get("description", "")})
+                    
+                    if coords:
+                        print_agent("vision", f"  🔍 视觉查漏检出 {len(coords)} 个被纯 DOM 遗漏的交互组件，在此处注入蓝色标签 (V系列)...")
+                        await page.evaluate(JS_DRAW_MISSING_SOM, coords)
+                        try:
+                            await page.evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+                        except Exception:
+                            await asyncio.sleep(0.05)
+                            
+                try:
+                    Path(stage_png).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.debug(f"视觉两段式查漏失败: {e}")
+            # ======================================================
 
         await page.screenshot(path=str(png_path), full_page=False)
 
