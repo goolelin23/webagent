@@ -47,10 +47,12 @@ def create_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--domain", type=str, default="", help="业务领域 (supply_chain/hr/ecommerce)")
     run_parser.add_argument("--auto-scan", action="store_true", help="执行前先扫描目标系统")
     run_parser.add_argument("--plan-only", action="store_true", help="仅生成执行计划，不实际执行")
+    run_parser.add_argument("--upload", type=str, default="", help="上传/挂载本地前端代码(支持目录或ZIP)")
 
     # ── scan: 扫描系统 ──
     scan_parser = subparsers.add_parser("scan", help="扫描Web系统并生成知识库")
-    scan_parser.add_argument("--url", type=str, required=True, help="目标系统URL")
+    scan_parser.add_argument("--url", type=str, default="", help="目标系统URL")
+    scan_parser.add_argument("--upload", type=str, default="", help="上传/挂载本地前端代码(支持目录或ZIP)")
     scan_parser.add_argument("--depth", type=int, default=2, help="扫描深度 (默认2)")
     scan_parser.add_argument("--max-pages", type=int, default=50, help="最大页面数 (默认50)")
 
@@ -140,6 +142,7 @@ class Commander:
         console.print("  [dim]  /model          — 查看当前模型配置[/dim]")
         console.print("  [dim]  /domain <name>  — 设置业务领域[/dim]")
         console.print("  [dim]  /url <url>      — 设置目标URL[/dim]")
+        console.print("  [dim]  /upload <path>  — 📦 上传并挂载本地前端代码(目录或ZIP)[/dim]")
         console.print("  [dim]  /help           — 显示帮助[/dim]")
         console.print("  [dim]  /quit           — 退出[/dim]")
         console.print()
@@ -200,6 +203,16 @@ class Commander:
                     elif cmd == "/url":
                         target_url = arg
                         console.print(f"  [cyan]目标URL已设置: {target_url}[/cyan]")
+                    elif cmd == "/upload":
+                        if not arg:
+                            arg = Prompt.ask("  请输入需上传的前端代码路径(目录/ZIP)")
+                        try:
+                            from webagent.utils.server import host_local_directory
+                            target_url = host_local_directory(arg)
+                            console.print(f"  [bold green]✅ 成功上传并挂载代码！已启动本地预览服务[/bold green]")
+                            console.print(f"  [cyan]目标URL自动设为: {target_url}[/cyan]")
+                        except Exception as e:
+                            console.print(f"  [bold red]上传挂载失败: {e}[/bold red]")
                     elif cmd == "/model":
                         self._model_command(arg)
                     elif cmd == "/analyze":
@@ -235,22 +248,44 @@ class Commander:
 
         orchestrator = self._get_orchestrator()
 
+        target_url = args.url
+        if args.upload:
+            try:
+                from webagent.utils.server import host_local_directory
+                target_url = host_local_directory(args.upload)
+                console.print(f"  [green]✅ 已挂载本地代码，预览服务 URL: {target_url}[/green]")
+            except Exception as e:
+                console.print(f"  [bold red]代码挂载失败: {e}[/bold red]")
+                return
+
         if args.domain:
             orchestrator.set_business_domain(args.domain)
 
         if args.plan_only:
-            asyncio.run(self._async_plan_only(args.instruction, args.url))
+            asyncio.run(self._async_plan_only(args.instruction, target_url))
         else:
             asyncio.run(self._async_run_task(
                 args.instruction,
-                args.url,
+                target_url,
                 auto_scan=args.auto_scan,
             ))
 
     def _scan_command(self, args):
         """处理 scan 子命令"""
         print_banner()
-        asyncio.run(self._async_scan(args.url, args.depth, args.max_pages))
+        target_url = args.url
+        if args.upload:
+            try:
+                from webagent.utils.server import host_local_directory
+                target_url = host_local_directory(args.upload)
+                console.print(f"  [green]✅ 已挂载本地代码，预览服务 URL: {target_url}[/green]")
+            except Exception as e:
+                console.print(f"  [bold red]代码挂载失败: {e}[/bold red]")
+                return
+        if not target_url:
+            console.print("  [bold red]错误: 必须提供 --url 或 --upload 之一[/bold red]")
+            return
+        asyncio.run(self._async_scan(target_url, args.depth, args.max_pages))
 
     def _kb_command(self, args):
         """处理 kb 子命令"""
@@ -368,7 +403,7 @@ class Commander:
         console.print(f"  [dim]目标: {url}[/dim]")
         console.print(f"  [dim]策略: BFS 宽度优先 | 区域感知元素识别 | 三阶坐标精修 | 持久化知识图谱[/dim]\n")
 
-        max_depth   = int(Prompt.ask("  最大跳转深度（建议 2-4）", default="3"))
+        max_depth   = int(Prompt.ask("  层级探索 (你想探索几层页面？)", choices=["1", "2", "3", "4", "5"], default="3"))
         max_nodes   = int(Prompt.ask("  最多探索页面数量上限", default="80"))
         max_elems   = int(Prompt.ask("  每个页面最多探索元素数", default="20"))
         output_dir  = Prompt.ask("  结果保存目录", default="exploration_output")
@@ -597,6 +632,7 @@ class Commander:
 | `/domain <name>` | 设置业务领域 (supply_chain/hr/ecommerce) |
 | `/url <url>` | 设置目标系统URL |
 | `/help` | 显示此帮助 |
+| `/upload <path>` | 📦 上传并挂载本地前端代码(支持解压ZIP) |
 | `/quit` | 退出 |
 """
         console.print(Markdown(help_text))

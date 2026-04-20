@@ -407,7 +407,8 @@ class SiteExplorer:
                         for exp_elem in expanded[:5]:  # 最多继续探索5个展开项
                             snap2 = await self._snapshot(page)
                             url2 = page.url
-                            ok2 = await self._click_element(page, exp_elem, ss_path)
+                            fresh_ss = await self.vision._screenshot(page, f"exp_{node_id}_{int(time.time())}")
+                            ok2 = await self._click_element(page, exp_elem, fresh_ss)
                             if ok2:
                                 await VisionEngine._wait_stable(page)
                                 new_url2 = page.url
@@ -817,6 +818,7 @@ class SiteExplorer:
             "url": page.url,
             "sx": await page.evaluate("window.scrollX"),
             "sy": await page.evaluate("window.scrollY"),
+            "hash": await self._compute_hash(page),
         }
 
     async def _restore(self, page: Page, snapshot: dict):
@@ -828,6 +830,17 @@ class SiteExplorer:
             except Exception as e:
                 logger.warning(f"回退失败: {e}")
                 return
+        else:
+            # 强化检查：即使 URL 没变，如果 DOM 变了也要重载 (防御 SPA 污染)
+            current_hash = await self._compute_hash(page)
+            if current_hash != snapshot.get("hash"):
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=12000)
+                    await VisionEngine._wait_stable(page)
+                    logger.debug("  🔄 触发强制重载, 清理 SPA DOM 突变状态")
+                except Exception as e:
+                    pass
+
         try:
             await page.evaluate(f"window.scrollTo({snapshot['sx']}, {snapshot['sy']})")
         except Exception:
@@ -853,10 +866,12 @@ class SiteExplorer:
             return hashlib.md5(page.url.encode()).hexdigest()[:16]
 
     def _normalize_url(self, url: str) -> str:
-        """去掉 query string / fragment，只保留 scheme+host+path"""
+        """标准化 URL：去除末尾斜杠，保留 query 和 fragment"""
         try:
             p = urlparse(url)
-            return urlunparse((p.scheme, p.netloc, p.path, "", "", ""))
+            # 保持 query 和 fragment，因为很多 SPA 依赖它们进行路由
+            path = p.path.rstrip('/') or '/'
+            return urlunparse((p.scheme, p.netloc, path, p.params, p.query, p.fragment))
         except Exception:
             return url
 

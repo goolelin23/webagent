@@ -21,6 +21,7 @@ Driving interactions via web natural language instructions (Vision-Driven) inste
 - 🧭 **Autonomous Curiosity Exploration** — Employs a curiosity-scored BFS algorithm combined with heuristic `sitemap.xml`/`robots.txt` discovery to proactively map unseen pages.
 - ⚡ **Strict Mode Locator Safety** — Auto-degrades multi-matched interactive elements safely to prevent `strict mode` crashes, significantly enhancing runtime robustness.
 - 📉 **Memory Decay Mechanism** — Intelligently applies time-decay factors to learned trajectories, preventing stale automation logic from persisting.
+- 📦 **Local Frontend Hosting (Zero-Config)** — Built-in HTTP server to instantly host local frontend source code or ZIP files. Use the `/upload` command to mount your code and let the AI perform a complete autonomous exploration over it!
 
 ---
 
@@ -94,6 +95,13 @@ uv run webpilot scan --url https://example.com --deep
 
 # Enter interactive Pilot mode
 uv run webpilot
+```
+
+### 📦 Host Local Code & Explore
+No need for Nginx. Directly host zipped frontend code in the interactive shell:
+```bash
+🤖 WebPilot> /upload ~/Downloads/react-app-dist.zip
+🤖 WebPilot> /explore
 ```
 
 ### Knowledge Management

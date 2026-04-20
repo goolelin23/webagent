@@ -25,6 +25,7 @@
   - **战果打标**：最终用物理画笔统一输出带有全页 SOM (Set-of-Mark) 红框与数字标签的高清图谱 `site_graph.json` 存档。
 - ⚡ **严格模式安全锁 (Strict Mode Safety)** — 为运行时定位器增加了多重匹配防御，当页面出现雷同元素时智能回滚至安全视角，彻底根除高频的 Strict Mode Validator 崩溃。
 - 📉 **记忆衰减算法 (Memory Decay)** — 引入基于时间的知识库衰减因子与模糊匹配降权，确保 Agent "忘掉"由于前端迭代而产生的过时操作记忆，轻装上阵。
+- 📦 **本地代码直接挂载 (Local Code Hosting)** — 内置轻量 HTTP Server，支持将未部署的本地前端代码 (纯静态目录或 ZIP 压缩包) 使用 `/upload` 指令瞬间唤起预览，并直接交由 AI 进行全覆盖式自主探索。
 
 ---
 
@@ -109,6 +110,13 @@ uv run webpilot scan --url https://example.com --deep
 
 # 进入交互式机长模式
 uv run webpilot
+```
+
+### 📦 挂载本地代码并探索
+无需 Nginx，在交互式命令行中直接挂载 ZIP 打包好的前端代码：
+```bash
+🤖 WebPilot> /upload ~/Downloads/react-app-dist.zip
+🤖 WebPilot> /explore
 ```
 
 ### 知识管理与优化
