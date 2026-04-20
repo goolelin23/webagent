@@ -232,7 +232,7 @@ class SiteExplorer:
         page: Page,
         max_depth: int = 3,
         max_nodes: int = 80,
-        max_elements_per_page: int = 20,
+        max_elements_per_page: int = 100,
         resume_path: str | None = None,
     ) -> dict:
         """
@@ -326,7 +326,12 @@ class SiteExplorer:
                 key=lambda e: (region_order.get(e.region_name, 6), -e.priority)
             )
 
-            # ── 逐元素探索 ──
+            # ── 生成最终综合 SOM 标签图 ──
+            final_som_path = str(self.output_dir / f"final_som_N{self._node_counter:04d}.jpg")
+            await self._draw_final_som_image(page, ss_path, elements, final_som_path)
+            node.screenshot = final_som_path  # 用带全局标签的图替换原始快照路径
+
+            # ── 逐元素探索（支持最大 100 次点击/页） ──
             for i, elem in enumerate(elements_sorted):
                 print_agent(
                     "site_explorer",
@@ -655,19 +660,78 @@ class SiteExplorer:
         return all_elements
 
 
+    async def _draw_final_som_image(self, page: Page, screenshot_path: str, elements: list[DiscoveredElement], output_path: str):
+        """
+        最后用 SOM 打好标签:
+        将探索发现的全部 100+ 个可交互元素物理绘制到截图中，生成带有红色数字标签的最终全景探索图
+        """
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            import os
+
+            if not os.path.exists(screenshot_path):
+                return
+
+            with Image.open(screenshot_path) as img:
+                img = img.convert("RGBA")
+                draw = ImageDraw.Draw(img)
+                
+                # 读取视口信息和 DPR
+                vp = await page.evaluate("() => ({w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio})")
+                dpr = float(vp.get("dpr", 1.0))
+                scroll_y = await page.evaluate("window.scrollY")
+
+                # 尝试加载字体，如果不存在则使用默认
+                try:
+                    font = ImageFont.truetype("Arial", size=16)
+                except IOError:
+                    font = ImageFont.load_default()
+
+                for i, elem in enumerate(elements):
+                    # 把 CSS 逻辑坐标算回截图物理坐标
+                    # 截图如果是全页长图，或者只是当前视口截屏
+                    # css_x, css_y 在这里我们目前记录的是相对视口的或者绝对的
+                    # 为了简化，直接转换
+                    px = int(elem.css_x * dpr)
+                    py = int(elem.css_y * dpr)
+                    
+                    # 绘制方块和小红框
+                    box_w, box_h = 24, 24
+                    left, top = px - box_w // 2, py - box_h // 2
+                    
+                    # 画红框
+                    draw.rectangle([left-2, top-2, left+box_w+2, top+box_h+2], outline="red", width=2)
+                    # 画底色块
+                    draw.rectangle([left, top, left+box_w, top+box_h], fill="red")
+                    
+                    # 居中画数字标签 (这里直接用 i+1 作为 SOM ID，对应 elements_sorted 里的顺序)
+                    text = str(i + 1)
+                    # get text size
+                    # try fallback text length approximation if textbbox not strictly uniform
+                    draw.text((left + 4, top + 4), text, fill="white", font=font)
+
+                # 将图片保存为 RGB 格式 jpg，减小体积
+                img.convert("RGB").save(output_path, "JPEG", quality=85)
+                logger.debug(f"已生成最终全页 SOM 标记图: {output_path} (打上了 {len(elements)} 个标签)")
+
+        except Exception as e:
+            logger.debug(f"绘制最终 SOM 标签图失败: {e}")
+            import shutil
+            shutil.copy2(screenshot_path, output_path)
+
     # ── 点击执行 ──────────────────────────────────────────
 
     async def _click_element(self, page: Page, elem: DiscoveredElement, screenshot_path: str) -> bool:
-        """带三阶坐标精修的元素点击，点击后若发现新展开元素则立即追加到返回列表"""
+        """带二阶视觉精修（Zoom-In Refinement）的元素点击"""
         from webagent.agents.vision_engine import VisionAction
         try:
             x, y = elem.css_x, elem.css_y
 
-            # 二阶精修（局部放大再定位）
+            # 无论如何都先跑二阶精修：对于从 DOM 拿到但描述不清的元素，VLM 能在局部高清图中重新认出它
             rx, ry, zoom_conf = await self.vision._zoom_refine_coords(
-                page, x, y, elem.description, zoom_radius=160
+                page, x, y, elem.description, zoom_radius=180
             )
-            if zoom_conf >= 0.45:
+            if zoom_conf >= 0.40:
                 x, y = rx, ry
 
             # DOM 吸附
