@@ -1063,9 +1063,14 @@ class VisionEngine:
         page: Page,
         goal: str,
         action_history: list[str] | None = None,
+        explored_element_ids: set[str] | None = None,
     ) -> VisionAction:
         """
         感知：截图 → 视觉模型推理下一步操作
+        
+        Args:
+            explored_element_ids: 当前页面已点击过的 SOM element_id 集合，
+                                  直接注入 prompt 让模型排除，防止瞎点重复元素
         """
         screenshot_path = await self._screenshot(page, "perceive", draw_som=True)
         print_agent("vision", f"📸 感知截图 (带分析标签): {screenshot_path}")
@@ -1074,9 +1079,16 @@ class VisionEngine:
             f"  {i+1}. {a}" for i, a in enumerate(action_history or [])
         ) or "（尚未执行任何操作）"
 
+        # 将已探索的 element_id 集合格式化为字符串注入 prompt
+        if explored_element_ids:
+            ids_text = "已探索ID: " + ", ".join(sorted(explored_element_ids)) + "  ← 禁止再次选择这些编号"
+        else:
+            ids_text = "（当前页面尚未探索任何元素）"
+
         prompt = VISION_PERCEIVE_PROMPT.format(
             goal=goal,
             action_history=history_text,
+            explored_element_ids=ids_text,
         )
 
         try:
@@ -1117,6 +1129,7 @@ class VisionEngine:
             is_dead_end=True,
             dead_end_reason=f"视觉感知异常",
         )
+
 
     async def quick_verify(
         self,

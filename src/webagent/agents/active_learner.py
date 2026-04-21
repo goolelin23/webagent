@@ -348,6 +348,7 @@ class ActiveLearner:
         successful_actions: list[VisionAction] = []
         consecutive_failures = 0
         max_consecutive_failures = 3
+        explored_element_ids: set[str] = set()  # 已点击的 SOM 元素ID，防止重复选择
 
         import difflib
         for step in range(max_actions_per_page):
@@ -382,9 +383,9 @@ class ActiveLearner:
                 print_agent("active_learner", f"  📚 真·命中已知操作，跳过感知直接执行: {reusable_action.target_description}")
                 vision_action = reusable_action
             else:
-                # 2. 截图 + 感知
-                print_agent("vision", f"  👁️ 视觉感知 (步骤 {step+1}/{max_actions_per_page})...")
-                vision_action = await self.vision.perceive(page, goal, action_history)
+                # 2. 截图 + 感知（注入已探索元素ID让模型精准排除）
+                print_agent("vision", f"  👁️ 视觉感知 (步骤 {step+1}/{max_actions_per_page}, 已探索{len(explored_element_ids)}个元素)...")
+                vision_action = await self.vision.perceive(page, goal, action_history, explored_element_ids)
 
             # 3. 死胡同检测
             if vision_action.is_dead_end:
@@ -421,6 +422,10 @@ class ActiveLearner:
 
             # 5. 执行操作
             exec_success = await self.vision.execute_vision_action(page, vision_action)
+
+            # 执行成功后记录 element_id，防止重复点击
+            if exec_success and vision_action.element_id:
+                explored_element_ids.add(vision_action.element_id)
 
             if not exec_success:
                 print_warning(f"  ❌ 操作执行失败: {action_desc}")
