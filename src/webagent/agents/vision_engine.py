@@ -1122,6 +1122,27 @@ class VisionEngine:
                 
                 if raw_x > 0 and raw_y > 0:
                     x, y = await self._scale_llm_coords(page, raw_x, raw_y, screenshot_path)
+                    
+                    # ============== 二级视觉精修 (Visual Zoom-In Refinement) ==============
+                    # 对于极小尺寸的按钮或密集层叠区，全图 1024 映射依然会产生微观物理像素误差。
+                    # 通过裁剪周围 320px 半径的原画并等比放大至 512px，让大模型贴脸看目标重新定位
+                    target_desc = na.get("target_description", "")
+                    action_t = na.get("action_type", "click")
+                    # 只有真正需要点击交互的坐标才做精修（滚动或死胡同跳过）
+                    if target_desc and action_t in ["click", "hover", "fill"]:
+                        print_agent("vision", f"  🔎 启动二级视觉极清裁剪定位 -> 目标: [{target_desc}], 粗估光标: CSS({x},{y})")
+                        rx, ry, conf = await self._zoom_refine_coords(
+                            page=page,
+                            rough_css_x=x,
+                            rough_css_y=y,
+                            element_description=target_desc,
+                            zoom_radius=160,     # 半径 160 即裁剪 320x320 的正方形
+                            zoom_output_size=512 # 放大约 1.6 倍
+                        )
+                        if conf > 0.1: # 找到了目标
+                            print_agent("vision", f"  🎯 二级精修完成！坐标微调: ({x},{y}) -> ({rx},{ry}), 模型自信度: {conf*100:.0f}%")
+                            x, y = rx, ry
+                    # ======================================================================
                 else:
                     x, y = int(raw_x), int(raw_y)
                 
