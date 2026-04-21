@@ -20,21 +20,19 @@ def _normalize_model_config(provider: str, model: str) -> tuple[str, str]:
     m = model.lower().replace(" ", "").replace("-", "")
     
     # Gemini 归一化
-    if "gemini3.1pro" in m:
+    if "gemini3.1pro" in m or "gemini31pro" in m:
         return ("gemini", "gemini-1.5-pro")
-    if "gemini3flash" in m:
+    if "gemini3flash" in m or "gemini3flash" in m:
         return ("gemini", "gemini-1.5-flash")
         
     # 千问归一化
-    if "千问3.0vlplus" in m or "qwen3.0vlplus" in m:
+    if "千问3.0vlplus" in m or "qwen3.0vlplus" in m or "qwen30vlplus" in m:
         return ("qwen", "qwen-vl-plus")
-    if "千问3.5plus" in m or "qwen3.5plus" in m:
+    if "千问3.5plus" in m or "qwen3.5plus" in m or "qwen35plus" in m:
         return ("qwen", "qwen-plus")
         
-    # Gemma 归一化
-    if "gemma4" in m:
-        # Gemma 可能会通过 OpenAI 兼容 API 调用，这里尝试规范化名称
-        return (p, "gemma-7b-it")
+    # 注意：不要对 Gemma 进行归一化，因为不同部署可能有不同的模型名
+    # 直接使用用户配置的模型名
         
     return provider, model
 
@@ -75,7 +73,9 @@ def get_llm() -> BaseChatModel:
             "temperature": config.llm.temperature,
             "max_tokens": config.llm.max_tokens,
         }
-        kwargs["base_url"] = "https://api.openai.com/v1"
+        # 只有在配置了 base_url 时才使用，否则使用默认的 OpenAI API
+        if config.llm.base_url:
+            kwargs["base_url"] = config.llm.base_url
         _llm_instance = ChatOpenAI(**kwargs)
 
     elif provider == "anthropic":
@@ -97,12 +97,15 @@ def get_llm() -> BaseChatModel:
         )
 
     elif provider == "qwen":
-        from langchain_qwq import ChatQwen
-        _llm_instance = ChatQwen(
-            model=normalized_model,
+        # Qwen (千问) 使用 OpenAI 兼容接口
+        from langchain_openai import ChatOpenAI
+        base_url = config.llm.base_url.strip() or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        _llm_instance = ChatOpenAI(
+            model=normalized_model or "qwen-plus",
             api_key=config.llm.api_key,
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
+            base_url=base_url
         )
 
     elif provider == "openclaw":
