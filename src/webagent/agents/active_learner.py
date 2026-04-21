@@ -38,6 +38,28 @@ class ActiveLearner:
         self.vision = VisionEngine()
         self.jury = JuryPanel()
 
+    # ── 异步安全的用户交互（不阻塞事件循环，保护 Playwright 管道） ──
+
+    @staticmethod
+    async def _async_input(prompt: str = "") -> str:
+        """非阻塞 input()，在线程池中执行以防止冻结 Playwright 连接"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: input(prompt))
+
+    @staticmethod
+    async def _async_confirm(message: str, default: bool = True) -> bool:
+        """非阻塞 Confirm.ask()"""
+        from rich.prompt import Confirm
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: Confirm.ask(message, default=default))
+
+    @staticmethod
+    async def _async_prompt(message: str, password: bool = False) -> str:
+        """非阻塞 Prompt.ask()"""
+        from rich.prompt import Prompt
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: Prompt.ask(message, password=password))
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # DOM 工具方法（保留兼容）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -366,11 +388,10 @@ class ActiveLearner:
 
             # 3. 死胡同检测
             if vision_action.is_dead_end:
-                from rich.prompt import Confirm
                 print_agent("active_learner", f"  🚫 到达死胡同: {vision_action.dead_end_reason}")
-                if Confirm.ask("  探索受阻 (死胡同)，是否需要人工介入解决？(Y/n)", default=True):
+                if await self._async_confirm("  探索受阻 (死胡同)，是否需要人工介入解决？(Y/n)", default=True):
                     print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
-                    input("  [按回车键让AI重新感知当前页面并继续探索...]")
+                    await self._async_input("  [按回车键让AI重新感知当前页面并继续探索...]")
                     snapshot = await self._save_snapshot(page)
                     continue
                 else:
@@ -397,11 +418,10 @@ class ActiveLearner:
                 await self._restore_snapshot(page, snapshot)
                 consecutive_failures += 1
                 if consecutive_failures >= max_consecutive_failures:
-                    from rich.prompt import Confirm
                     print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，探索受阻。")
-                    if Confirm.ask("  是否需要人工介入解决？(Y/n)", default=True):
+                    if await self._async_confirm("  是否需要人工介入解决？(Y/n)", default=True):
                         print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
-                        input("  [按回车键让AI重新感知当前页面并继续探索...]")
+                        await self._async_input("  [按回车键让AI重新感知当前页面并继续探索...]")
                         consecutive_failures = 0
                         snapshot = await self._save_snapshot(page)
                         continue
@@ -499,11 +519,10 @@ class ActiveLearner:
                 consecutive_failures += 1
 
                 if consecutive_failures >= max_consecutive_failures:
-                    from rich.prompt import Confirm
                     print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，探索受阻。")
-                    if Confirm.ask("  是否需要人工介入解决？(Y/n)", default=True):
+                    if await self._async_confirm("  是否需要人工介入解决？(Y/n)", default=True):
                         print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
-                        input("  [按回车键让AI重新感知当前页面并继续探索...]")
+                        await self._async_input("  [按回车键让AI重新感知当前页面并继续探索...]")
                         consecutive_failures = 0
                         snapshot = await self._save_snapshot(page)
                         continue
@@ -591,11 +610,10 @@ class ActiveLearner:
                     if auth_path.exists():
                         print_agent("active_learner", "🔑 检测到登录页，已有保存的凭证，跳过")
                     else:
-                        from rich.prompt import Prompt, Confirm
                         print_warning("🔒 检测到登录页，当前无保存凭证。")
-                        account = Prompt.ask("  请输入登录账号 (留空将其记录为受阻路径跳过)")
+                        account = await self._async_prompt("  请输入登录账号 (留空将其记录为受阻路径跳过)")
                         if account:
-                            password = Prompt.ask("  请输入登录密码", password=True)
+                            password = await self._async_prompt("  请输入登录密码", password=True)
                             print_agent("active_learner", "  🤖 正在准备自主执行登录...")
                             
                             goal = f"使用账号 '{account}' 和密码 '{password}' 完成系统登录操作并确保已成功进入系统内部。完成后不再做任何探索操作。"
@@ -637,9 +655,9 @@ class ActiveLearner:
                             else:
                                 print_warning("  ⚠️ 自动登录未能成功完成。")
                                 # 给予用户手动介入的机会
-                                if Confirm.ask("  是否需要人工介入完成登录？(Y/n)", default=True):
+                                if await self._async_confirm("  是否需要人工介入完成登录？(Y/n)", default=True):
                                     print_agent("active_learner", "  🛠️ 请在浏览器中手动完成登录操作，完成后按回车...")
-                                    input("  [按回车键继续...]")
+                                    await self._async_input("  [按回车键继续...]")
                                     if not await self._detect_login_page(page):
                                         print_success("  ✅ 人工登录成功，保存凭证并继续...")
                                         await context.storage_state(path=str(auth_path))
