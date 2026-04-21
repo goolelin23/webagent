@@ -282,13 +282,21 @@ class DeepAnalysis:
         return None
 
     def get_skills_prompt(self) -> str:
-        """生成技能列表提示词"""
+        """生成技能列表提示词 (极简精简版防爆显存)"""
         lines = []
+        total_skills_added = 0
         for url, skill_list in self.page_skills.items():
             for s in skill_list:
+                if total_skills_added > 20:  # 强制熔断，防止局部 LLM 上下文爆炸
+                    lines.append("- ...(限于算力容量，更多技能被折叠)")
+                    return "\n".join(lines)
+                
                 skill = PageSkillDef.from_dict(s)
                 params_str = ", ".join(skill.get_param_names()) if skill.parameters else ""
-                lines.append(f"- {skill.skill_id}({params_str}) — {skill.name}: {skill.description}")
+                # 移除冗长的 detail description，仅保留名称和参数，大幅降低 Token 负担
+                lines.append(f"- [{skill.skill_id}] ({params_str}) — {skill.name}")
+                total_skills_added += 1
+                
         return "\n".join(lines) if lines else "（暂无页面技能）"
 
     def get_workflows_prompt(self) -> str:
@@ -296,8 +304,9 @@ class DeepAnalysis:
         lines = []
         for wf in self.get_workflows():
             keywords = ", ".join(wf.trigger_keywords[:5])
-            steps = " → ".join(wf.skill_sequence)
-            lines.append(f"- {wf.name} [关键词: {keywords}]: {steps}")
+            # 仅截取前三个技能作为摘要
+            steps = " → ".join(wf.skill_sequence[:3]) + ("..." if len(wf.skill_sequence)>3 else "")
+            lines.append(f"- {wf.name} [触发词: {keywords}]: {steps}")
         return "\n".join(lines) if lines else "（暂无工作流）"
 
 

@@ -209,7 +209,7 @@ class KnowledgeStore:
                 "page_title": page.title,
                 "page_type": page.page_type,
                 "elements_count": len(page.elements),
-                "forms": [f.to_dict() for f in page.forms],
+                "forms": [{"form_id": f.form_id, "submit_button": f.submit_button} for f in page.forms],
                 "business_rules": page.business_rules,
             })
 

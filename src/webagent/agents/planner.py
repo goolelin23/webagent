@@ -142,15 +142,24 @@ class PlannerAgent:
         return new_plan
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """调用 LLM"""
+        """调用 LLM 并流式输出缓解本地模型的等待焦虑"""
         try:
             from langchain_core.messages import SystemMessage, HumanMessage
+            from webagent.utils.logger import console
+            
             lc_messages = [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ]
-            response = await self.llm.ainvoke(lc_messages)
-            return response.content
+            
+            console.print("  [dim cyan]分析过程思考中...[/dim cyan]")
+            final_content = ""
+            async for chunk in self.llm.astream(lc_messages):
+                if chunk.content:
+                    final_content += chunk.content
+                    console.print(chunk.content, end="")
+            console.print("\n")
+            return final_content
 
         except Exception as e:
             logger.error(f"LLM 调用失败: {e}")
