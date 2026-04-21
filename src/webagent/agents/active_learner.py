@@ -397,11 +397,20 @@ class ActiveLearner:
                 else:
                     break
 
-            # 3.1 沙盒危险隔离检测
+            # 3.1 沙盒危险隔离检测 — 拦截所有写操作，包括删除类
             if getattr(vision_action, 'risk_level', 'safe') == 'dangerous':
-                print_agent("active_learner", f"  ⛔ 危险操作拦截: {vision_action.target_description} (被判定为危险的写操作)")
-                action_history.append(f"[受阻] {vision_action.target_description} — (由沙盒协议拦截)")
+                print_agent("active_learner", f"  ⛔ 危险操作拦截: {vision_action.target_description} (写操作/删除操作禁止)")
+                action_history.append(f"[受阻] {vision_action.target_description} — (沙盒拦截)")
                 break
+
+            # 额外检测删除类关键词（双保险，禁止任何删除操作）
+            _desc_lower = vision_action.target_description.lower()
+            _delete_keywords = ["删除", "delete", "remove", "清除", "clear all", "批量删除", "drop", "truncate", "清空"]
+            if any(k in _desc_lower for k in _delete_keywords) and vision_action.action_type in ("click", "double_click"):
+                print_agent("active_learner", f"  ⛔ 关键词拦截: 检测到删除操作 '{vision_action.target_description}'，已跳过")
+                action_history.append(f"[拒绝] {vision_action.target_description} — (删除操作禁止执行)")
+                continue
+
 
             action_desc = f"{vision_action.action_type} → {vision_action.target_description}"
             print_agent("active_learner", f"  🎯 决策: {action_desc} (坐标: {vision_action.coordinates})")
@@ -452,24 +461,20 @@ class ActiveLearner:
 
             if verify_result.success:
                 print_success(f"  ✅ 验证通过: {verify_result.change_description}")
-                action_history.append(f"[成功] {action_desc}")
-                successful_actions.append(vision_action)
                 consecutive_failures = 0
 
-                # 8. 陪审团评审（优化：简单操作跳过评审）
-                # 对菜单点击、滚动等低风险操作跳过 jury，节省 LLM 调用
+                # 8. 陪审团评审（简单操作跳过）
                 simple_actions = {"scroll_down", "scroll_up", "hover"}
                 skip_jury = (
                     vision_action.action_type in simple_actions
-                    or (vision_action.action_type == "click" and step < 3)  # 前3步的点击跳过评审
+                    or (vision_action.action_type == "click" and step < 3)
                 )
 
                 if skip_jury:
-                    # 直接沉淀，给默认评分
                     self._learn_action(
                         site, vision_action,
                         screenshot_before, screenshot_after or "",
-                        page.url,
+                        snapshot["url"],
                         jury_score=7.0,
                         jury_reasoning="简单操作自动通过",
                     )
@@ -479,57 +484,89 @@ class ActiveLearner:
                         action_description=vision_action.target_description,
                         coordinates=vision_action.coordinates,
                         selector_hint=vision_action.selector_hint,
-                        page_url=page.url,
+                        page_url=snapshot["url"],
                         page_change=verify_result.change_description,
                         exploration_goal=goal,
                         learned_count=len(site.learned_actions),
                         step_number=step + 1,
                     )
-
                     if verdict.approved:
-                        # 9. 通过评审 → 沉淀到知识库
                         self._learn_action(
                             site, vision_action,
                             screenshot_before, screenshot_after or "",
-                            page.url,
+                            snapshot["url"],
                             jury_score=verdict.average_score,
                             jury_reasoning=verdict.summary,
                         )
                     else:
-                        print_warning(
-                            f"  ❌ 陪审团否决 ({verdict.average_score:.1f}分): {verdict.summary}"
-                        )
+                        print_warning(f"  ❌ 陪审团否决 ({verdict.average_score:.1f}分): {verdict.summary}")
                         action_history.append(f"[否决] {action_desc} — {verdict.summary}")
 
-                # 如果页面发生了导航变化，可能需要递归探索
+                # ── 关键回退逻辑：操作后发生页面跳转，立即记录并回退 ──
                 if verify_result.page_changed and page.url != snapshot["url"]:
-                    print_agent("active_learner", f"  📄 页面切换到: {page.url}")
-                    # 不在这里递归，交给外层循环处理
+                    new_url = page.url
+                    print_agent("active_learner", f"  🔀 操作触发页面跳转 → {new_url}")
+                    print_agent("active_learner", f"  ↩️  记录新URL，回退原页面继续探索其他元素")
+
+                    # 用 __nav__ 标记将新 URL 传递给外层 BFS 队列
+                    successful_actions.append(VisionAction(
+                        action_type="__nav__",
+                        target_description=new_url,
+                        coordinates={},
+                        reasoning=f"'{vision_action.target_description}' 触发跳转 → {new_url}",
+                    ))
+                    action_history.append(f"[成功/跳转] {action_desc} → {new_url}")
+
+                    # 立即回退到操作前快照，继续在原页面探索其他元素
+                    await self._restore_snapshot(page, snapshot)
+                    print_agent("active_learner", f"  ✅ 已回退至: {page.url}")
+                else:
+                    # 未跳转的成功操作（展开菜单/弹窗/hover等），直接记录继续
+                    action_history.append(f"[成功] {action_desc}")
+                    successful_actions.append(vision_action)
+
             else:
-                # 验证失败 → 自愈回退
-                print_warning(f"  ⚠️ 验证失败: {verify_result.change_description}")
-                if verify_result.error_detected:
-                    print_error(f"  🔴 检测到错误: {verify_result.error_message}")
+                # 验证失败：区分"无变化"和"真实错误"两种情况
+                action_no_change = not verify_result.page_changed and not verify_result.error_detected
 
-                action_history.append(f"[失败] {action_desc} — {verify_result.suggestion}")
-                self._mark_action_failed(site, vision_action, page.url)
+                if action_no_change:
+                    # 无跳转、无报错 → 视为"原地有效操作"（菜单展开、tooltip等），记录并继续
+                    print_agent("active_learner", f"  📌 原地操作（无跳转无报错）: {verify_result.change_description or '无明显变化'}，已记录")
+                    action_history.append(f"[原地] {action_desc}")
+                    self._learn_action(
+                        site, vision_action,
+                        screenshot_before, screenshot_after or "",
+                        snapshot["url"],
+                        jury_score=5.0,
+                        jury_reasoning="原地操作：无页面跳转，UI状态可能有变化",
+                    )
+                    successful_actions.append(vision_action)
+                    consecutive_failures = 0
+                else:
+                    # 真实失败（有错误信息或异常页面变化）→ 自愈回退
+                    print_warning(f"  ⚠️ 验证失败: {verify_result.change_description}")
+                    if verify_result.error_detected:
+                        print_error(f"  🔴 检测到错误: {verify_result.error_message}")
 
-                # 回退到操作前快照
-                await self._restore_snapshot(page, snapshot)
-                consecutive_failures += 1
+                    action_history.append(f"[失败] {action_desc} — {verify_result.suggestion}")
+                    self._mark_action_failed(site, vision_action, page.url)
 
-                if consecutive_failures >= max_consecutive_failures:
-                    print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，探索受阻。")
-                    if await self._async_confirm("  是否需要人工介入解决？(Y/n)", default=True):
-                        print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
-                        await self._async_input("  [按回车键让AI重新感知当前页面并继续探索...]")
-                        consecutive_failures = 0
-                        snapshot = await self._save_snapshot(page)
-                        continue
-                    else:
-                        break
+                    await self._restore_snapshot(page, snapshot)
+                    consecutive_failures += 1
+
+                    if consecutive_failures >= max_consecutive_failures:
+                        print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，探索受阻。")
+                        if await self._async_confirm("  是否需要人工介入解决？(Y/n)", default=True):
+                            print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
+                            await self._async_input("  [按回车键让AI重新感知当前页面并继续探索...]")
+                            consecutive_failures = 0
+                            snapshot = await self._save_snapshot(page)
+                            continue
+                        else:
+                            break
 
         return successful_actions
+
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 深度扫描主入口
@@ -705,13 +742,19 @@ class ActiveLearner:
                     page, site, goal, max_actions_per_page=8,
                 )
 
-                # 收集本页探索中发现的新 URL
-                current_page_url = page.url
-                if current_page_url != current_url:
-                    url_key_new = current_page_url.split("?")[0]
-                    if url_key_new not in visited_urls:
-                        score = self._compute_curiosity_score(current_page_url, visited_urls, site)
-                        explore_queue.append((current_page_url, depth + 1, score))
+                # ── 收集探索中发现的新 URL（来自视觉触发跳转后的回退标记） ──
+                nav_count = 0
+                for act in successful_actions:
+                    if act.action_type == "__nav__":
+                        nav_url = act.target_description
+                        nav_key = nav_url.split("?")[0]
+                        if nav_key not in visited_urls:
+                            score = self._compute_curiosity_score(nav_url, visited_urls, site)
+                            explore_queue.append((nav_url, depth + 1, score))
+                            nav_count += 1
+                            print_agent("active_learner", f"  📋 新URL入队 (深度 {depth+1}): {nav_url}")
+                if nav_count:
+                    print_agent("active_learner", f"  📋 共发现 {nav_count} 个新URL加入BFS队列")
 
                 # 从 DOM 提取到的导航链接也加入队列
                 if page.url == current_url:
