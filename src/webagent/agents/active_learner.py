@@ -338,6 +338,7 @@ class ActiveLearner:
         site: SiteKnowledge,
         goal: str,
         max_actions_per_page: int = 8,
+        max_self_healing_retries: int = 3,
     ) -> list[VisionAction]:
         """
         视觉驱动的单页探索
@@ -347,7 +348,7 @@ class ActiveLearner:
         action_history: list[str] = []
         successful_actions: list[VisionAction] = []
         consecutive_failures = 0
-        max_consecutive_failures = 3
+        max_consecutive_failures = max_self_healing_retries
         explored_element_ids: set[str] = set()  # 已点击的 SOM 元素ID，防止重复选择
 
         import difflib
@@ -488,6 +489,27 @@ class ActiveLearner:
                     screenshot_after = await self.vision._screenshot(page, "after")
 
             # ═══════════════════════════════════════════
+            # 人工介入判定环节 (如果模型认为失败)
+            # ═══════════════════════════════════════════
+            if not verify_result.success:
+                print_warning(f"  🤔 验证模型判定操作可能未达预期/失败: {verify_result.change_description or verify_result.error_message}")
+                print_agent("active_learner", "  是否需人工干预？(直接回车维持失败，输入 'y' 强制算成功，其它输入作为成功预期)")
+                user_ans = await self._async_input("  人工复核结论 (y/[n]/你的验证预期): ")
+                user_ans = user_ans.strip()
+                
+                if user_ans:
+                    if user_ans.lower() == 'y':
+                        verify_result.success = True
+                        verify_result.error_detected = False
+                        verify_result.change_description = "人工确认操作成功"
+                        print_success("  ✅ 已强制修正为成功判定")
+                    elif user_ans.lower() != 'n':
+                        verify_result.success = True
+                        verify_result.error_detected = False
+                        verify_result.change_description = user_ans
+                        print_success(f"  ✅ 已采纳人工预期结果: {user_ans}")
+
+            # ═══════════════════════════════════════════
             # 自愈阶段 C：根据验证结果做决策
             # ═══════════════════════════════════════════
 
@@ -619,7 +641,14 @@ class ActiveLearner:
     # 深度扫描主入口
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    async def scan_deep(self, target_url: str, max_depth: int = 3, max_nodes: int = 50, orchestrator: Any = None) -> SiteKnowledge:
+    async def scan_deep(
+        self, 
+        target_url: str, 
+        max_depth: int = 3, 
+        max_nodes: int = 50, 
+        orchestrator: Any = None,
+        max_self_healing_retries: int = 3,
+    ) -> SiteKnowledge:
         """
         视觉驱动的深度交互扫描主入口
         """
@@ -787,6 +816,7 @@ class ActiveLearner:
 
                 successful_actions = await self._vision_explore_page(
                     page, site, goal, max_actions_per_page=8,
+                    max_self_healing_retries=max_self_healing_retries
                 )
 
                 # ── 收集探索中发现的新 URL（来自视觉触发跳转后的回退标记） ──
