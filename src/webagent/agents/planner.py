@@ -157,8 +157,9 @@ class PlannerAgent:
             async for chunk in self.llm.astream(lc_messages):
                 if chunk.content:
                     final_content += chunk.content
-                    console.print(chunk.content, end="")
-            console.print("\n")
+                    # 使用原生 print 强制刷新缓冲区，避免 rich 组件吞掉流式小块
+                    print(chunk.content, end="", flush=True)
+            print("\n", flush=True)
             return final_content
 
         except Exception as e:

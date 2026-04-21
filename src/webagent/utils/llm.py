@@ -72,6 +72,7 @@ def get_llm() -> BaseChatModel:
             "api_key": config.llm.api_key,
             "temperature": config.llm.temperature,
             "max_tokens": config.llm.max_tokens,
+            "streaming": True,
         }
         # 只有在配置了 base_url 时才使用，否则使用默认的 OpenAI API
         if config.llm.base_url:
@@ -105,7 +106,8 @@ def get_llm() -> BaseChatModel:
             api_key=config.llm.api_key,
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
-            base_url=base_url
+            base_url=base_url,
+            streaming=True
         )
 
     elif provider == "openclaw":
@@ -117,7 +119,8 @@ def get_llm() -> BaseChatModel:
             api_key=config.llm.api_key or "openclaw-local-key",  # dummy key
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
-            base_url=base_url
+            base_url=base_url,
+            streaming=True
         )
 
     else:
