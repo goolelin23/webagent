@@ -563,33 +563,53 @@ class VisionEngine:
             return png_path
 
     async def _scale_llm_coords(self, page: Page, llm_x: float, llm_y: float, screenshot_path: str) -> tuple[int, int]:
-        """将 LLM 相对于截图尺寸返回的坐标缩放回 Playwright 使用的纯正 CSS 逻辑视口像素，并应用全局自愈补偿"""
+        """将 LLM 相对于截图尺寸返回的坐标缩放回 Playwright 使用的纯正 CSS 逻辑视口像素，并应用反 Letterboxing 填充补偿与全局自愈叠加"""
         try:
             viewport = await page.evaluate("() => { return { w: window.innerWidth, h: window.innerHeight }; }")
             vw, vh = int(viewport["w"]), int(viewport["h"])
             
             is_gemma = getattr(self.config.llm, "model", "") and "gemma" in self.config.llm.model.lower()
             
-            # 1. 如果坐标是 [0, 1.0] 之间的小数
-            if 0 < llm_x <= 1.0 and 0 < llm_y <= 1.0:
+            from PIL import Image
+            with Image.open(screenshot_path) as img:
+                img_w, img_h = img.size
+
+            # 1. 尝试匹配 Gemma 固有的 [0, 1000] 归一化体系（含黑边去空运算）
+            if is_gemma and llm_x <= 1000 and llm_y <= 1000:
+                # [核心修正] Gemma 处理图像通常强行缩放至正方形从而形成 Letterboxing (四周边距 Padding)
+                # VLM 放出的归一化结果实质是针对该包含占位黑边的"虚假正方形"的，必须通过比例差逆运算
+                S = max(img_w, img_h)
+                padding_x = (S - img_w) / 2
+                padding_y = (S - img_h) / 2
+
+                # 归一化[0,1000] -> 原图填充成的虚假正方形体系中的绝对像素点
+                abs_x_in_square = (llm_x / 1000.0) * S
+                abs_y_in_square = (llm_y / 1000.0) * S
+
+                # 减去由于形成方形而产生的补空边距，回到实际送显图像的内容锚点
+                orig_x = abs_x_in_square - padding_x
+                orig_y = abs_y_in_square - padding_y
+
+                # 如果减出界，限制在合理区
+                orig_x = max(0.0, min(orig_x, float(img_w)))
+                orig_y = max(0.0, min(orig_y, float(img_h)))
+
+                # 精确通过占比对齐回浏览器的真实逻辑视口高度(脱离高分屏DPR杂讯影响)
+                x = int((orig_x / img_w) * vw)
+                y = int((orig_y / img_h) * vh)
+                logger.debug(f"📐 坐标反填充映射(Gemma缩放): LLM({llm_x},{llm_y}) -> 画像实际({orig_x:.1f},{orig_y:.1f}) -> CSS({x},{y})")
+                
+            # 2. 如果坐标是 [0, 1.0] 之间纯粹的比例小数
+            elif 0 < llm_x <= 1.0 and 0 < llm_y <= 1.0:
                 x = int(llm_x * vw)
                 y = int(llm_y * vh)
                 logger.debug(f"📐 坐标映射(比例): LLM({llm_x},{llm_y}) -> CSS({x},{y})")
-            
-            # 2. 如果是 Gemma 固有的 [0, 1000] 归一化标记体系
-            elif is_gemma and llm_x <= 1000 and llm_y <= 1000:
-                x = int((llm_x / 1000.0) * vw)
-                y = int((llm_y / 1000.0) * vh)
-                logger.debug(f"📐 坐标映射(Gemma归一化1000): LLM({llm_x},{llm_y}) -> CSS({x},{y})")
                 
-            # 3. 否则默认为是截图像素的绝对数值（如 GPT-4 / 局部 Qwen 像素输出）
+            # 3. 未知像素强坐标 (例如大模型没有采用千化体系)
             else:
-                from PIL import Image
-                with Image.open(screenshot_path) as img:
-                    img_w, img_h = img.size
                 x = int((llm_x / img_w) * vw)
                 y = int((llm_y / img_h) * vh)
-                logger.debug(f"📐 坐标映射(像素): LLM({llm_x},{llm_y}) [图片 {img_w}x{img_h}] -> CSS({x},{y})")
+                logger.debug(f"📐 坐标映射(像素比): LLM({llm_x},{llm_y}) [图片 {img_w}x{img_h}] -> CSS({x},{y})")
         except Exception as e:
             logger.warning(f"坐标缩放转换异常: {e}，将使用原始坐标")
             x, y = int(llm_x), int(llm_y)
