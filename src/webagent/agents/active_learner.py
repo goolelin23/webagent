@@ -371,7 +371,7 @@ class ActiveLearner:
                 if Confirm.ask("  探索受阻 (死胡同)，是否需要人工介入解决？(Y/n)", default=True):
                     print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
                     input("  [按回车键让AI重新感知当前页面并继续探索...]")
-                    snapshot = await self._snapshot(page)
+                    snapshot = await self._save_snapshot(page)
                     continue
                 else:
                     break
@@ -403,7 +403,7 @@ class ActiveLearner:
                         print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
                         input("  [按回车键让AI重新感知当前页面并继续探索...]")
                         consecutive_failures = 0
-                        snapshot = await self._snapshot(page)
+                        snapshot = await self._save_snapshot(page)
                         continue
                     else:
                         break
@@ -505,7 +505,7 @@ class ActiveLearner:
                         print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
                         input("  [按回车键让AI重新感知当前页面并继续探索...]")
                         consecutive_failures = 0
-                        snapshot = await self._snapshot(page)
+                        snapshot = await self._save_snapshot(page)
                         continue
                     else:
                         break
@@ -591,7 +591,7 @@ class ActiveLearner:
                     if auth_path.exists():
                         print_agent("active_learner", "🔑 检测到登录页，已有保存的凭证，跳过")
                     else:
-                        from rich.prompt import Prompt
+                        from rich.prompt import Prompt, Confirm
                         print_warning("🔒 检测到登录页，当前无保存凭证。")
                         account = Prompt.ask("  请输入登录账号 (留空将其记录为受阻路径跳过)")
                         if account:
@@ -599,25 +599,14 @@ class ActiveLearner:
                             print_agent("active_learner", "  🤖 正在准备自主执行登录...")
                             
                             goal = f"使用账号 '{account}' 和密码 '{password}' 完成系统登录操作并确保已成功进入系统内部。完成后不再做任何探索操作。"
+                            login_succeeded = False
+                            
                             if orchestrator:
                                 print_agent("active_learner", "  🚀 召唤 WebPilot 自带编排级管线执行登录博弈...")
                                 try:
                                     report = await orchestrator.run_task_on_page(goal, page, current_url)
-                                    if report and report.success:
-                                        print_success("  ✅ WebPilot Agent 自动登录成功，保存登录凭证并继续深度扫描...")
-                                        await context.storage_state(path=str(auth_path))
-                                        
-                                        # 检查是否跳页了
-                                        if page.url != current_url:
-                                            url_key_new = page.url.split("?")[0]
-                                            if url_key_new not in visited_urls:
-                                                score = self._compute_curiosity_score(page.url, visited_urls, site)
-                                                explore_queue.append((page.url, depth, score))
-                                    else:
-                                        print_warning("  ⚠️ 自动登录虽然执行结束，但未能确认圆满完成...")
-                                        site.blocked_paths.append(BlockedPath(
-                                            url=current_url, state_id="login_detected_failed", action_attempted="auto_login", target_selector="", reason="login_failed"
-                                        ).to_dict())
+                                    if report and report.success and not await self._detect_login_page(page):
+                                        login_succeeded = True
                                 except Exception as e:
                                     logger.error(f"自动化登录接管异常: {e}")
                                     print_error(f"  ❌ WebPilot 自动登录流抛出异常: {e}")
@@ -632,17 +621,39 @@ class ActiveLearner:
                                     await VisionEngine._wait_stable(page)
                                     action_history.append(f"{action.action_type} -> {action.target_description}")
                                     if not await self._detect_login_page(page):
-                                        print_success("  ✅ 自动登录成功，保存登录凭证并继续深度扫描...")
-                                        await context.storage_state(path=str(auth_path))
-                                        # 将新页面加入队列
-                                        if page.url != current_url:
-                                            url_key_new = page.url.split("?")[0]
-                                            if url_key_new not in visited_urls:
-                                                score = self._compute_curiosity_score(page.url, visited_urls, site)
-                                                explore_queue.append((page.url, depth, score))
+                                        login_succeeded = True
                                         break
+                            
+                            # ── 统一处理登录结果 ──
+                            if login_succeeded:
+                                print_success("  ✅ 自动登录成功，保存登录凭证并继续深度扫描...")
+                                await context.storage_state(path=str(auth_path))
+                                # 将登录后的页面加入队列（无论 URL 是否变化）
+                                post_login_url = page.url
+                                url_key_new = post_login_url.split("?")[0]
+                                if url_key_new not in visited_urls:
+                                    score = self._compute_curiosity_score(post_login_url, visited_urls, site)
+                                    explore_queue.append((post_login_url, depth, score))
+                            else:
+                                print_warning("  ⚠️ 自动登录未能成功完成。")
+                                # 给予用户手动介入的机会
+                                if Confirm.ask("  是否需要人工介入完成登录？(Y/n)", default=True):
+                                    print_agent("active_learner", "  🛠️ 请在浏览器中手动完成登录操作，完成后按回车...")
+                                    input("  [按回车键继续...]")
+                                    if not await self._detect_login_page(page):
+                                        print_success("  ✅ 人工登录成功，保存凭证并继续...")
+                                        await context.storage_state(path=str(auth_path))
+                                        post_login_url = page.url
+                                        url_key_new = post_login_url.split("?")[0]
+                                        if url_key_new not in visited_urls:
+                                            score = self._compute_curiosity_score(post_login_url, visited_urls, site)
+                                            explore_queue.append((post_login_url, depth, score))
+                                    else:
+                                        print_warning("  ⚠️ 仍然检测到登录页，记录为受阻路径。")
+                                        site.blocked_paths.append(BlockedPath(
+                                            url=current_url, state_id="login_detected_failed", action_attempted="manual_login", target_selector="", reason="login_failed"
+                                        ).to_dict())
                                 else:
-                                    print_warning("  ⚠️ 自动登录未确信完成！")
                                     site.blocked_paths.append(BlockedPath(
                                         url=current_url, state_id="login_detected_failed", action_attempted="auto_login", target_selector="", reason="login_failed"
                                     ).to_dict())

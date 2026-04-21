@@ -152,7 +152,9 @@ class AgentOrchestrator:
             logger.error(f"寄生任务执行失败: {e}")
             print_error(f"寄生任务执行异常: {e}")
             raise
-        # 注意: 绝对不要在这里调用 finally 关闭浏览器，因为浏览器归属权在主探索器！
+        finally:
+            # 无论成功或失败，都必须解除寄生模式，防止 executor 保留脏状态
+            self.executor.detach_page()
 
 
     async def scan(

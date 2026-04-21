@@ -76,6 +76,7 @@ class ExecutorAgent:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._pipeline: ActionPipeline | None = None
+        self._is_parasitic: bool = False  # 寄生模式标记：不拥有浏览器生命周期
 
     async def initialize(self):
         """初始化浏览器"""
@@ -109,6 +110,7 @@ class ExecutorAgent:
         self._page = page
         self._context = page.context
         self._browser = self._context.browser
+        self._is_parasitic = True
         # 此模式下不对 _playwright 赋值，因为我们不是其生命周期的持有者
 
         self._pipeline = ActionPipeline(
@@ -116,7 +118,16 @@ class ExecutorAgent:
             safety_classifier=self.safety_classifier,
             skill_manager=self.skill_manager,
         )
-        print_agent("executor", "✨ 成功附加到现有的浏览器 Page")
+        print_agent("executor", "✨ 成功附加到现有的浏览器 Page (寄生模式)")
+
+    def detach_page(self):
+        """解除寄生模式，清理引用但不关闭浏览器"""
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._pipeline = None
+        self._is_parasitic = False
+        print_agent("executor", "🔌 已解除寄生模式，浏览器还给主探索器")
 
     async def execute_plan(self, plan: ExecutionPlan) -> ExecutionReport:
         """
@@ -227,13 +238,19 @@ class ExecutorAgent:
         return path
 
     async def close(self):
-        """关闭浏览器"""
+        """关闭浏览器（寄生模式下仅解除引用，不关闭外部浏览器）"""
+        if self._is_parasitic:
+            self.detach_page()
+            return
         if self._browser:
             await self._browser.close()
             self._browser = None
         if hasattr(self, '_playwright') and self._playwright:
             await self._playwright.stop()
             self._playwright = None
+        self._pipeline = None
+        self._page = None
+        self._context = None
         print_agent("executor", "浏览器已关闭")
 
     @property

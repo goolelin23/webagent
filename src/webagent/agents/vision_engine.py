@@ -1348,23 +1348,24 @@ class VisionEngine:
                 await robust_wait(page)
 
                 if action.value:
-                    # 尝试在展开的列表中找到目标选项
-                    found_option = await page.evaluate(f"""
-                        (() => {{
+                    # 尝试在展开的列表中找到目标选项（安全传参，避免 JS 注入）
+                    safe_value = action.value
+                    found_option = await page.evaluate("""
+                        (targetText) => {
                             const options = document.querySelectorAll(
                                 '.ant-select-item, .el-select-dropdown__item, '
                                 + '[role="option"], [role="listbox"] li, '
                                 + '.dropdown-item, .dropdown-menu li, option'
                             );
-                            for (const opt of options) {{
-                                if (opt.textContent.trim().includes('{action.value}')) {{
+                            for (const opt of options) {
+                                if (opt.textContent.trim().includes(targetText)) {
                                     opt.click();
                                     return true;
-                                }}
-                            }}
+                                }
+                            }
                             return false;
-                        }})()
-                    """)
+                        }
+                    """, safe_value)
                     if found_option:
                         print_agent("vision", f"  ✅ 下拉选项定位成功: {action.value}")
                         await robust_wait(page)

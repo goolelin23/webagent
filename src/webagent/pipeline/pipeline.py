@@ -312,7 +312,7 @@ class ActionPipeline:
 
             if data and data.get("found"):
                 coords = data.get("coordinates", {})
-                llm_x, llm_y = int(coords.get("x", 0)), int(coords.get("y", 0))
+                llm_x, llm_y = float(coords.get("x", 0)), float(coords.get("y", 0))
                 confidence = data.get("confidence", 0)
                 desc = data.get("element_description", "")
                 
