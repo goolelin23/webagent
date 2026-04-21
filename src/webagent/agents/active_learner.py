@@ -429,46 +429,73 @@ class ActiveLearner:
 
             if not exec_success:
                 print_warning(f"  ❌ 操作执行失败: {action_desc}")
+                action_history.append(f"[执行失败] {action_desc}")
                 await self._restore_snapshot(page, snapshot)
                 consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
-                    print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，探索受阻。")
-                    if await self._async_confirm("  是否需要人工介入解决？(Y/n)", default=True):
-                        print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
-                        await self._async_input("  [按回车键让AI重新感知当前页面并继续探索...]")
-                        consecutive_failures = 0
-                        snapshot = await self._save_snapshot(page)
-                        continue
-                    else:
-                        break
+                # 不重试同一操作 → 重新感知选新元素
                 continue
 
-            # 6. 等待页面响应（使用智能等待代替 sleep(1)）
+            # 6. 等待页面响应
             from webagent.agents.vision_engine import VisionEngine
             await VisionEngine._wait_stable(page)
 
-            # 7. 快速验证（优先，无需 LLM 调用）
+            # ═══════════════════════════════════════════
+            # 自愈阶段 A：意外弹窗/遮罩层检测与自动清除
+            # ═══════════════════════════════════════════
+            from webagent.pipeline.state_validator import StateValidator
+            _validator = StateValidator(page)
+            modal_check = await _validator.check_for_modals()
+            if not modal_check.passed:
+                print_warning(f"  🔔 自愈: 检测到意外弹窗 — {modal_check.message}")
+                dismissed = await _validator.dismiss_modal()
+                if dismissed:
+                    print_agent("active_learner", "  ✅ 自愈: 弹窗已自动关闭")
+                    await VisionEngine._wait_stable(page)
+                else:
+                    # 弹窗无法关闭 → 尝试Escape
+                    try:
+                        await page.keyboard.press("Escape")
+                        await VisionEngine._wait_stable(page)
+                        recheck = await _validator.check_for_modals()
+                        if recheck.passed:
+                            print_agent("active_learner", "  ✅ 自愈: 通过 ESC 关闭了弹窗")
+                        else:
+                            print_warning("  ⚠️ 自愈: 弹窗无法自动关闭，回退快照")
+                            action_history.append(f"[弹窗阻塞] {action_desc}")
+                            await self._restore_snapshot(page, snapshot)
+                            consecutive_failures += 1
+                            continue
+                    except Exception:
+                        await self._restore_snapshot(page, snapshot)
+                        consecutive_failures += 1
+                        continue
+
+            # ═══════════════════════════════════════════
+            # 自愈阶段 B：验证操作效果
+            # ═══════════════════════════════════════════
             verify_result = await self.vision.quick_verify(
                 page, page_snapshot_before, action_desc
             )
             screenshot_after = ""
 
-            # 如果快速验证不确定，才回退到 LLM 验证
             if verify_result is None:
                 logger.debug(f"快速验证不确定，回退到 LLM 验证: {action_desc}")
                 verify_result, screenshot_after = await self.vision.verify(
                     page, screenshot_before, action_desc
                 )
             else:
-                # 快速验证有结果时，只在需要时截图
                 if verify_result.success:
                     screenshot_after = await self.vision._screenshot(page, "after")
+
+            # ═══════════════════════════════════════════
+            # 自愈阶段 C：根据验证结果做决策
+            # ═══════════════════════════════════════════
 
             if verify_result.success:
                 print_success(f"  ✅ 验证通过: {verify_result.change_description}")
                 consecutive_failures = 0
 
-                # 8. 陪审团评审（简单操作跳过）
+                # 陪审团评审（简单操作跳过）
                 simple_actions = {"scroll_down", "scroll_up", "hover"}
                 skip_jury = (
                     vision_action.action_type in simple_actions
@@ -507,13 +534,11 @@ class ActiveLearner:
                         print_warning(f"  ❌ 陪审团否决 ({verdict.average_score:.1f}分): {verdict.summary}")
                         action_history.append(f"[否决] {action_desc} — {verdict.summary}")
 
-                # ── 关键回退逻辑：操作后发生页面跳转，立即记录并回退 ──
+                # 跳转检测 → 记录 + 回退
                 if verify_result.page_changed and page.url != snapshot["url"]:
                     new_url = page.url
                     print_agent("active_learner", f"  🔀 操作触发页面跳转 → {new_url}")
                     print_agent("active_learner", f"  ↩️  记录新URL，回退原页面继续探索其他元素")
-
-                    # 用 __nav__ 标记将新 URL 传递给外层 BFS 队列
                     successful_actions.append(VisionAction(
                         action_type="__nav__",
                         target_description=new_url,
@@ -521,56 +546,73 @@ class ActiveLearner:
                         reasoning=f"'{vision_action.target_description}' 触发跳转 → {new_url}",
                     ))
                     action_history.append(f"[成功/跳转] {action_desc} → {new_url}")
-
-                    # 立即回退到操作前快照，继续在原页面探索其他元素
                     await self._restore_snapshot(page, snapshot)
                     print_agent("active_learner", f"  ✅ 已回退至: {page.url}")
                 else:
-                    # 未跳转的成功操作（展开菜单/弹窗/hover等），直接记录继续
                     action_history.append(f"[成功] {action_desc}")
                     successful_actions.append(vision_action)
 
+            elif verify_result.error_detected:
+                # ═══ 自愈路径 D：检测到错误（报错弹窗/500/表单校验失败等）═══
+                print_warning(f"  🔴 自愈: 检测到页面错误 — {verify_result.error_message}")
+                action_history.append(f"[错误] {action_desc} — {verify_result.error_message}")
+                self._mark_action_failed(site, vision_action, page.url)
+
+                # 先尝试清除错误弹窗
+                modal_recheck = await _validator.check_for_modals()
+                if not modal_recheck.passed:
+                    dismissed = await _validator.dismiss_modal()
+                    if dismissed:
+                        print_agent("active_learner", "  ✅ 自愈: 错误弹窗已关闭，回退继续")
+                    else:
+                        await page.keyboard.press("Escape")
+                        await VisionEngine._wait_stable(page)
+
+                # 无论弹窗是否关闭，都回退到快照
+                await self._restore_snapshot(page, snapshot)
+                print_agent("active_learner", f"  ↩️  自愈: 已回退到操作前状态，将重新感知选择其他元素")
+                consecutive_failures += 1
+                # 不重试原操作，下一轮 perceive 会根据更新的 action_history 选新动作
+
             else:
-                # 验证失败：区分"无变化"和"真实错误"两种情况
-                action_no_change = not verify_result.page_changed and not verify_result.error_detected
+                # 无报错但验证未通过：区分"无变化"和"异常变化"
+                action_no_change = not verify_result.page_changed
 
                 if action_no_change:
-                    # 无跳转、无报错 → 视为"原地有效操作"（菜单展开、tooltip等），记录并继续
-                    print_agent("active_learner", f"  📌 原地操作（无跳转无报错）: {verify_result.change_description or '无明显变化'}，已记录")
+                    # 无跳转无报错 → 原地操作，记录继续
+                    print_agent("active_learner", f"  📌 原地操作: {verify_result.change_description or '无明显变化'}")
                     action_history.append(f"[原地] {action_desc}")
                     self._learn_action(
                         site, vision_action,
                         screenshot_before, screenshot_after or "",
                         snapshot["url"],
                         jury_score=5.0,
-                        jury_reasoning="原地操作：无页面跳转，UI状态可能有变化",
+                        jury_reasoning="原地操作：无页面跳转",
                     )
                     successful_actions.append(vision_action)
                     consecutive_failures = 0
                 else:
-                    # 真实失败（有错误信息或异常页面变化）→ 自愈回退
-                    print_warning(f"  ⚠️ 验证失败: {verify_result.change_description}")
-                    if verify_result.error_detected:
-                        print_error(f"  🔴 检测到错误: {verify_result.error_message}")
-
-                    action_history.append(f"[失败] {action_desc} — {verify_result.suggestion}")
+                    # 异常页面变化（不是成功也不是报错，可能是误点导致页面偏移）
+                    print_warning(f"  ⚠️ 自愈: 操作导致异常页面变化 — {verify_result.change_description}")
+                    action_history.append(f"[异常] {action_desc} — {verify_result.change_description}")
                     self._mark_action_failed(site, vision_action, page.url)
-
                     await self._restore_snapshot(page, snapshot)
+                    print_agent("active_learner", f"  ↩️  自愈: 已回退，将选择新元素")
                     consecutive_failures += 1
 
-                    if consecutive_failures >= max_consecutive_failures:
-                        print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，探索受阻。")
-                        if await self._async_confirm("  是否需要人工介入解决？(Y/n)", default=True):
-                            print_agent("active_learner", "  🛠️ 人工介入模式：请在真实的浏览器窗口中操作，完成后回车...")
-                            await self._async_input("  [按回车键让AI重新感知当前页面并继续探索...]")
-                            consecutive_failures = 0
-                            snapshot = await self._save_snapshot(page)
-                            continue
-                        else:
-                            break
+            # ═══ 自愈阶段 E：连续失败过多，请求人工介入 ═══
+            if consecutive_failures >= max_consecutive_failures:
+                print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，自愈循环无法解决。")
+                if await self._async_confirm("  是否需要人工介入？(Y/n)", default=True):
+                    print_agent("active_learner", "  🛠️ 请在浏览器中操作，完成后按回车...")
+                    await self._async_input("  [按回车键继续...]")
+                    consecutive_failures = 0
+                    snapshot = await self._save_snapshot(page)
+                else:
+                    break
 
         return successful_actions
+
 
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
