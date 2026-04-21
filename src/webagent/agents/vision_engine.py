@@ -562,20 +562,37 @@ class VisionEngine:
             logger.debug(f"截图压缩失败: {e}")
             return png_path
 
-    async def _scale_llm_coords(self, page: Page, llm_x: int, llm_y: int, screenshot_path: str) -> tuple[int, int]:
+    async def _scale_llm_coords(self, page: Page, llm_x: float, llm_y: float, screenshot_path: str) -> tuple[int, int]:
         """将 LLM 相对于截图尺寸返回的坐标缩放回 Playwright 使用的纯正 CSS 逻辑视口像素，并应用全局自愈补偿"""
         try:
-            from PIL import Image
-            with Image.open(screenshot_path) as img:
-                img_w, img_h = img.size
             viewport = await page.evaluate("() => { return { w: window.innerWidth, h: window.innerHeight }; }")
             vw, vh = int(viewport["w"]), int(viewport["h"])
-            x = int((llm_x / img_w) * vw)
-            y = int((llm_y / img_h) * vh)
-            logger.debug(f"📐 视觉底层坐标映射: LLM({llm_x},{llm_y}) [图片 {img_w}x{img_h}] -> CSS({x},{y}) [视口 {vw}x{vh}]")
+            
+            is_gemma = getattr(self.config.llm, "model", "") and "gemma" in self.config.llm.model.lower()
+            
+            # 1. 如果坐标是 [0, 1.0] 之间的小数
+            if 0 < llm_x <= 1.0 and 0 < llm_y <= 1.0:
+                x = int(llm_x * vw)
+                y = int(llm_y * vh)
+                logger.debug(f"📐 坐标映射(比例): LLM({llm_x},{llm_y}) -> CSS({x},{y})")
+            
+            # 2. 如果是 Gemma 固有的 [0, 1000] 归一化标记体系
+            elif is_gemma and llm_x <= 1000 and llm_y <= 1000:
+                x = int((llm_x / 1000.0) * vw)
+                y = int((llm_y / 1000.0) * vh)
+                logger.debug(f"📐 坐标映射(Gemma归一化1000): LLM({llm_x},{llm_y}) -> CSS({x},{y})")
+                
+            # 3. 否则默认为是截图像素的绝对数值（如 GPT-4 / 局部 Qwen 像素输出）
+            else:
+                from PIL import Image
+                with Image.open(screenshot_path) as img:
+                    img_w, img_h = img.size
+                x = int((llm_x / img_w) * vw)
+                y = int((llm_y / img_h) * vh)
+                logger.debug(f"📐 坐标映射(像素): LLM({llm_x},{llm_y}) [图片 {img_w}x{img_h}] -> CSS({x},{y})")
         except Exception as e:
             logger.warning(f"坐标缩放转换异常: {e}，将使用原始坐标")
-            x, y = llm_x, llm_y
+            x, y = int(llm_x), int(llm_y)
 
         # 应用全局自演进修复偏移量
         x += self.GLOBAL_OFFSET_X
@@ -688,9 +705,20 @@ class VisionEngine:
                 return rough_css_x, rough_css_y, 0.0
 
             zoom_coords = data.get("coordinates", {})
-            zoom_x = int(zoom_coords.get("x", 0))
-            zoom_y = int(zoom_coords.get("y", 0))
+            raw_zoom_x = float(zoom_coords.get("x", 0))
+            raw_zoom_y = float(zoom_coords.get("y", 0))
             confidence = float(data.get("confidence", 0.0))
+            
+            is_gemma = getattr(self.config.llm, "model", "") and "gemma" in self.config.llm.model.lower()
+            if 0 < raw_zoom_x <= 1.0 and 0 < raw_zoom_y <= 1.0:
+                zoom_x = raw_zoom_x * zoom_output_size
+                zoom_y = raw_zoom_y * zoom_output_size
+            elif is_gemma and raw_zoom_x <= 1000 and raw_zoom_y <= 1000:
+                zoom_x = (raw_zoom_x / 1000.0) * zoom_output_size
+                zoom_y = (raw_zoom_y / 1000.0) * zoom_output_size
+            else:
+                zoom_x = raw_zoom_x
+                zoom_y = raw_zoom_y
 
             # ── Step 6: 坐标反算 ──
             # 6a. 放大图坐标 → canvas 偏移去除 → 裁剪图坐标（物理像素）
@@ -1057,13 +1085,13 @@ class VisionEngine:
 
             if data and "next_action" in data:
                 na = data["next_action"]
-                raw_x = int(na.get("coordinates", {}).get("x", 0))
-                raw_y = int(na.get("coordinates", {}).get("y", 0))
+                raw_x = float(na.get("coordinates", {}).get("x", 0.0))
+                raw_y = float(na.get("coordinates", {}).get("y", 0.0))
                 
                 if raw_x > 0 and raw_y > 0:
                     x, y = await self._scale_llm_coords(page, raw_x, raw_y, screenshot_path)
                 else:
-                    x, y = raw_x, raw_y
+                    x, y = int(raw_x), int(raw_y)
                 
                 return VisionAction(
                     action_type=na.get("action_type", "click"),
@@ -1222,12 +1250,12 @@ class VisionEngine:
 
             if data and data.get("found"):
                 coords = data.get("coordinates", {})
-                raw_x = int(coords.get("x", 0))
-                raw_y = int(coords.get("y", 0))
+                raw_x = float(coords.get("x", 0.0))
+                raw_y = float(coords.get("y", 0.0))
                 if raw_x > 0 and raw_y > 0:
                     x, y = await self._scale_llm_coords(page, raw_x, raw_y, screenshot_path)
                 else:
-                    x, y = raw_x, raw_y
+                    x, y = int(raw_x), int(raw_y)
                     
                 return (
                     x,

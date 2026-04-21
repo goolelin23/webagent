@@ -115,6 +115,46 @@ class AgentOrchestrator:
         finally:
             await self.executor.close()
 
+    async def run_task_on_page(
+        self,
+        instruction: str,
+        page: Any,
+        target_url: str = "",
+    ) -> ExecutionReport:
+        """
+        寄生模式：在外部传入的现有页面上直接执行任务，不关浏览器。
+        适用于探索途中遇到的死胡同代办。
+        """
+        console.print(f"\n[bold magenta]{'='*60}[/bold magenta]")
+        console.print(f"[bold magenta]  🤖 WebPilot 自动代办: {instruction}[/bold magenta]")
+        console.print(f"[bold magenta]{'='*60}[/bold magenta]")
+        
+        self.executor.attach_page(page)
+        
+        try:
+            # Step 1: 任务规划
+            console.print("[dim]  [规划域] 开始生成破局步骤...[/dim]")
+            plan = await self.planner.plan(instruction, target_url)
+            
+            # Step 2: 任务执行
+            console.print("[dim]  [执行域] 开管线，进入智能执行循环...[/dim]")
+            report = await self._execute_with_replan(plan)
+            
+            # 报告结果
+            if report.success:
+                print_success("  ✅ WebPilot 自动代办圆满完成！")
+            else:
+                print_error("  ❌ WebPilot 自动代办遇挫，请检查逻辑。")
+                
+            return report
+            
+        except Exception as e:
+            logger.error(f"寄生任务执行失败: {e}")
+            print_error(f"寄生任务执行异常: {e}")
+            raise
+        # 注意: 绝对不要在这里调用 finally 关闭浏览器，因为浏览器归属权在主探索器！
+
+
     async def scan(
         self,
         target_url: str,
@@ -150,6 +190,7 @@ class AgentOrchestrator:
             target_url=target_url,
             max_depth=depth,
             max_nodes=max_pages,
+            orchestrator=self,
         )
 
     async def resolve_blocked_paths(self, domain: str):

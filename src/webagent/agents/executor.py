@@ -104,6 +104,20 @@ class ExecutorAgent:
 
         print_agent("executor", "浏览器初始化完成")
 
+    def attach_page(self, page: Page):
+        """寄生接管模式：附加到现有的浏览器 Page 上，而不自己创建一个"""
+        self._page = page
+        self._context = page.context
+        self._browser = self._context.browser
+        # 此模式下不对 _playwright 赋值，因为我们不是其生命周期的持有者
+
+        self._pipeline = ActionPipeline(
+            page=self._page,
+            safety_classifier=self.safety_classifier,
+            skill_manager=self.skill_manager,
+        )
+        print_agent("executor", "✨ 成功附加到现有的浏览器 Page")
+
     async def execute_plan(self, plan: ExecutionPlan) -> ExecutionReport:
         """
         执行完整的执行计划

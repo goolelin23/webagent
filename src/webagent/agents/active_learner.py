@@ -10,6 +10,7 @@ import json
 import hashlib
 import time
 from pathlib import Path
+from typing import Any
 
 from webagent.knowledge.models import (
     PageKnowledge, SiteKnowledge, ElementInfo, FormInfo,
@@ -515,7 +516,7 @@ class ActiveLearner:
     # 深度扫描主入口
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    async def scan_deep(self, target_url: str, max_depth: int = 3, max_nodes: int = 50) -> SiteKnowledge:
+    async def scan_deep(self, target_url: str, max_depth: int = 3, max_nodes: int = 50, orchestrator: Any = None) -> SiteKnowledge:
         """
         视觉驱动的深度交互扫描主入口
         """
@@ -595,30 +596,56 @@ class ActiveLearner:
                         account = Prompt.ask("  请输入登录账号 (留空将其记录为受阻路径跳过)")
                         if account:
                             password = Prompt.ask("  请输入登录密码", password=True)
-                            print_agent("active_learner", "  🤖 正在自主执行登录...")
-                            goal = f"使用账号 '{account}' 和密码 '{password}' 登录系统。"
-                            action_history = []
-                            for step in range(5):
-                                action = await self.vision.perceive(page, goal, action_history)
-                                if action.is_dead_end: break
-                                await self.vision.execute_vision_action(page, action)
-                                await VisionEngine._wait_stable(page)
-                                action_history.append(f"{action.action_type} -> {action.target_description}")
-                                if not await self._detect_login_page(page):
-                                    print_success("  ✅ 自动登录成功，保存登录凭证并继续深度扫描...")
-                                    await context.storage_state(path=str(auth_path))
-                                    # 将新页面加入队列
-                                    if page.url != current_url:
-                                        url_key_new = page.url.split("?")[0]
-                                        if url_key_new not in visited_urls:
-                                            score = self._compute_curiosity_score(page.url, visited_urls, site)
-                                            explore_queue.append((page.url, depth, score))
-                                    break
+                            print_agent("active_learner", "  🤖 正在准备自主执行登录...")
+                            
+                            goal = f"使用账号 '{account}' 和密码 '{password}' 完成系统登录操作并确保已成功进入系统内部。完成后不再做任何探索操作。"
+                            if orchestrator:
+                                print_agent("active_learner", "  🚀 召唤 WebPilot 自带编排级管线执行登录博弈...")
+                                try:
+                                    report = await orchestrator.run_task_on_page(goal, page, current_url)
+                                    if report and report.success:
+                                        print_success("  ✅ WebPilot Agent 自动登录成功，保存登录凭证并继续深度扫描...")
+                                        await context.storage_state(path=str(auth_path))
+                                        
+                                        # 检查是否跳页了
+                                        if page.url != current_url:
+                                            url_key_new = page.url.split("?")[0]
+                                            if url_key_new not in visited_urls:
+                                                score = self._compute_curiosity_score(page.url, visited_urls, site)
+                                                explore_queue.append((page.url, depth, score))
+                                    else:
+                                        print_warning("  ⚠️ 自动登录虽然执行结束，但未能确认圆满完成...")
+                                        site.blocked_paths.append(BlockedPath(
+                                            url=current_url, state_id="login_detected_failed", action_attempted="auto_login", target_selector="", reason="login_failed"
+                                        ).to_dict())
+                                except Exception as e:
+                                    logger.error(f"自动化登录接管异常: {e}")
+                                    print_error(f"  ❌ WebPilot 自动登录流抛出异常: {e}")
                             else:
-                                print_warning("  ⚠️ 自动登录未确信完成！")
-                                site.blocked_paths.append(BlockedPath(
-                                    url=current_url, state_id="login_detected_failed", action_attempted="auto_login", target_selector="", reason="login_failed"
-                                ).to_dict())
+                                # 旧版循环退化兼容处理
+                                print_warning("  [dim] 未检测到 orchestrator 注入，降级为早期单模态闭环探索... [/dim]")
+                                action_history = []
+                                for step in range(5):
+                                    action = await self.vision.perceive(page, goal, action_history)
+                                    if action.is_dead_end: break
+                                    await self.vision.execute_vision_action(page, action)
+                                    await VisionEngine._wait_stable(page)
+                                    action_history.append(f"{action.action_type} -> {action.target_description}")
+                                    if not await self._detect_login_page(page):
+                                        print_success("  ✅ 自动登录成功，保存登录凭证并继续深度扫描...")
+                                        await context.storage_state(path=str(auth_path))
+                                        # 将新页面加入队列
+                                        if page.url != current_url:
+                                            url_key_new = page.url.split("?")[0]
+                                            if url_key_new not in visited_urls:
+                                                score = self._compute_curiosity_score(page.url, visited_urls, site)
+                                                explore_queue.append((page.url, depth, score))
+                                        break
+                                else:
+                                    print_warning("  ⚠️ 自动登录未确信完成！")
+                                    site.blocked_paths.append(BlockedPath(
+                                        url=current_url, state_id="login_detected_failed", action_attempted="auto_login", target_selector="", reason="login_failed"
+                                    ).to_dict())
                         else:
                             site.blocked_paths.append(BlockedPath(
                                 url=current_url,
