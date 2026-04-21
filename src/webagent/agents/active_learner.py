@@ -489,27 +489,6 @@ class ActiveLearner:
                     screenshot_after = await self.vision._screenshot(page, "after")
 
             # ═══════════════════════════════════════════
-            # 人工介入判定环节 (如果模型认为失败)
-            # ═══════════════════════════════════════════
-            if not verify_result.success:
-                print_warning(f"  🤔 验证模型判定操作可能未达预期/失败: {verify_result.change_description or verify_result.error_message}")
-                print_agent("active_learner", "  是否需人工干预？(直接回车维持失败，输入 'y' 强制算成功，其它输入作为成功预期)")
-                user_ans = await self._async_input("  人工复核结论 (y/[n]/你的验证预期): ")
-                user_ans = user_ans.strip()
-                
-                if user_ans:
-                    if user_ans.lower() == 'y':
-                        verify_result.success = True
-                        verify_result.error_detected = False
-                        verify_result.change_description = "人工确认操作成功"
-                        print_success("  ✅ 已强制修正为成功判定")
-                    elif user_ans.lower() != 'n':
-                        verify_result.success = True
-                        verify_result.error_detected = False
-                        verify_result.change_description = user_ans
-                        print_success(f"  ✅ 已采纳人工预期结果: {user_ans}")
-
-            # ═══════════════════════════════════════════
             # 自愈阶段 C：根据验证结果做决策
             # ═══════════════════════════════════════════
 
@@ -622,16 +601,10 @@ class ActiveLearner:
                     print_agent("active_learner", f"  ↩️  自愈: 已回退，将选择新元素")
                     consecutive_failures += 1
 
-            # ═══ 自愈阶段 E：连续失败过多，请求人工介入 ═══
+            # ═══ 自愈阶段 E：连续失败过多，放弃当前页面 ═══
             if consecutive_failures >= max_consecutive_failures:
-                print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，自愈循环无法解决。")
-                if await self._async_confirm("  是否需要人工介入？(Y/n)", default=True):
-                    print_agent("active_learner", "  🛠️ 请在浏览器中操作，完成后按回车...")
-                    await self._async_input("  [按回车键继续...]")
-                    consecutive_failures = 0
-                    snapshot = await self._save_snapshot(page)
-                else:
-                    break
+                print_warning(f"  🛑 连续失败 {max_consecutive_failures} 次，自愈循环无法解决，放弃当前页面。")
+                break
 
         return successful_actions
 

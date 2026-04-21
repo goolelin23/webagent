@@ -142,89 +142,15 @@ class ActionPipeline:
 
         # ── 6. 人工介入兜底 (Human-in-the-loop) ──
         if not retry_result.success:
-            try:
-                import sys
-                if sys.stdin.isatty():
-                    from rich.prompt import Confirm
-                    from webagent.utils.logger import console
+            from webagent.utils.logger import console
 
-                    if vision_failed:
-                        console.print(f"\n[bold yellow]⚠️ 选择器和视觉模型均无法定位元素: {step.description}[/bold yellow]")
-                        console.print(f"[dim]目标: {step.target}[/dim]")
-                        console.print(f"[dim]请在浏览器中手动完成此操作[/dim]")
-                    else:
-                        console.print(f"\n[bold yellow]⚠️ 步骤执行受阻或点选失败: {step.description}[/bold yellow]")
-                        console.print(f"[dim]原因为: {retry_result.last_error}[/dim]")
-                    
-                    loop = asyncio.get_event_loop()
-                    should_intervene = await loop.run_in_executor(
-                        None, 
-                        lambda: Confirm.ask("是否需要人工介入辅助操作？(将暂停自动化并允许您在浏览器内手工点击)")
-                    )
-                    
-                    if should_intervene:
-                        console.print("[cyan]👉 已开启 Playwright 检查器，浏览器处于暂停状态。[/cyan]")
-                        console.print("[cyan]请在浏览器中手工完成该操作，完成后点击浮动栏上的 'Resume / 恢复' 按钮。[/cyan]")
-                        
-                        # 注入前端嗅探器，精准监听用户的人工点击动作以实现纠错自学习
-                        await self.page.evaluate("""
-                            window.__human_tracker = null;
-                            window.__ht_listener = (e) => {
-                                if (e.isTrusted) {
-                                    window.__human_tracker = {
-                                        x: e.clientX,
-                                        y: e.clientY,
-                                        tag: e.target.tagName,
-                                        id: e.target.id || '',
-                                        class: e.target.className || '',
-                                        text: (e.target.textContent || '').trim().substring(0, 40)
-                                    };
-                                }
-                            };
-                            document.body.addEventListener('click', window.__ht_listener, true);
-                        """)
-
-                        await self.page.pause()
-                        
-                        # 提取用户留下的纠错轨迹数据
-                        tracked_data = await self.page.evaluate("""
-                            (() => {
-                                document.body.removeEventListener('click', window.__ht_listener, true);
-                                return window.__human_tracker;
-                            })()
-                        """)
-                        
-                        if tracked_data:
-                            x_human = tracked_data['x']
-                            y_human = tracked_data['y']
-                            
-                            # ✨ [自愈与神经突触生长] 测量 LLM 偏差 ✨
-                            if hasattr(self, "_last_vision_coords") and self._last_vision_coords:
-                                llm_x = self._last_vision_coords.get("x", 0)
-                                llm_y = self._last_vision_coords.get("y", 0)
-                                dx = x_human - llm_x
-                                dy = y_human - llm_y
-                                
-                                console.print(f"[bold cyan]🤖 对照学习完成: 人工坐标 ({x_human},{y_human}) vs 视觉坐标 ({llm_x},{llm_y})[/bold cyan]")
-                                console.print(f"[bold cyan]   📐 测量出系统当前偏移偏差: ΔX={dx}px, ΔY={dy}px[/bold cyan]")
-                                
-                                # 将偏差值持久化到 VisionEngine，让它以后自动修正
-                                from webagent.agents.vision_engine import VisionEngine
-                                VisionEngine.update_global_offset(dx, dy)
-                                self._last_vision_coords = None
-
-                            # 提取用户的纠错坐标与目标特征，并固化为管线日志的 step.value 
-                            step.value = f"[HUMAN_CORRECTION] x:{x_human}, y:{y_human}, tag:{tracked_data['tag']}, text:{tracked_data['text']}"
-                            console.print(f"[green]✅ 已捕获人类导师纠错动作坐标: ({x_human}, {y_human})，组件特征已记入模型！[/green]")
-                        else:
-                            step.value = "[HUMAN_INTERVENED]"
-                            console.print("[green]✅ 收到恢复信号，未捕获点击，视作接管成功继续。[/green]")
-
-                        retry_result.success = True
-                        retry_result.last_error = ""
-                        retry_result.should_replan = False
-            except Exception as e:
-                logger.debug(f"人工介入交互异常: {e}")
+            if retry_result.last_error:
+                if "vision_failed" in retry_result.last_error:
+                    console.print(f"\n[bold yellow]⚠️ 选择器和视觉模型均无法定位元素: {step.description}[/bold yellow]")
+                    console.print(f"[dim]目标: {step.target}[/dim]")
+                else:
+                    console.print(f"\n[bold yellow]⚠️ 步骤执行受阻或点选失败: {step.description}[/bold yellow]")
+                    console.print(f"[dim]原因为: {retry_result.last_error}[/dim]")
 
         # ── 5. 后置校验 ──
         post_state = await self.validator.get_page_state()
