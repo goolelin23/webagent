@@ -82,6 +82,7 @@ class SiteNode:
     depth: int
     state_hash: str
     screenshot: str = ""    # 截图路径
+    action_path: list[dict] = field(default_factory=list)
     elements: list[dict] = field(default_factory=list)
     elements_explored: int = 0
     elements_found: int = 0
@@ -96,6 +97,7 @@ class SiteNode:
             "depth": self.depth,
             "state_hash": self.state_hash,
             "screenshot": self.screenshot,
+            "action_path": self.action_path,
             "elements_found": self.elements_found,
             "elements_explored": self.elements_explored,
             "elements": self.elements,
@@ -217,10 +219,12 @@ class SiteExplorer:
         self._node_counter = 0
         self._edge_counter = 0
 
-        # BFS 队列: (url, depth, from_node_id)
-        self._queue: deque[tuple[str, int, str]] = deque()
+        # BFS 队列: (url, depth, from_node_id, action_path)
+        self._queue: deque[tuple[str, int, str, list[dict]]] = deque()
         # 已加入队列的 URL（去掉 query 的标准化路径，防重复入队）
         self._queued_urls: set[str] = set()
+        # 已加入队列的状态哈希（防止同一状态重复入队）
+        self._queued_hashes: set[str] = set()
 
         # 域名限制（探索时不跨域）
         self._allowed_origin: str = ""
@@ -256,7 +260,7 @@ class SiteExplorer:
             self._load_state(resume_path)
             print_agent("site_explorer", f"📂 断点续探，已恢复 {len(self._nodes)} 个节点")
         else:
-            self._queue.append((start_url, 0, ""))
+            self._queue.append((start_url, 0, "", []))
             self._queued_urls.add(self._normalize_url(start_url))
 
         print_agent("site_explorer", f"\n🌐 Web 系统全量探索启动")
@@ -267,18 +271,25 @@ class SiteExplorer:
 
         # ── BFS 主循环 ──
         while self._queue and len(self._nodes) < max_nodes:
-            target_url, depth, from_node_id = self._queue.popleft()
+            target_url, depth, from_node_id, action_path = self._queue.popleft()
 
             if depth > max_depth:
                 continue
 
-            # 导航到目标页面
+            # 导航到目标页面并重放记忆
             try:
                 if page.url != target_url:
                     await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
                 await VisionEngine._wait_stable(page)
+
+                # 下沉记忆：如果有 action_path，代表需要通过点击才能到达这个状态
+                if action_path:
+                    for act in action_path:
+                        print_agent("site_explorer", f"  🧠 遵循记忆路径: 点击 {act.get('description', '未知')}")
+                        await page.mouse.click(act["x"], act["y"])
+                        await VisionEngine._wait_stable(page)
             except Exception as e:
-                logger.warning(f"无法导航到 {target_url}: {e}")
+                logger.warning(f"无法导航到 {target_url} 或执行记忆重放: {e}")
                 continue
 
             # 检测是否为登录页面
@@ -344,6 +355,7 @@ class SiteExplorer:
                 depth=depth,
                 state_hash=state_hash,
                 screenshot=ss_path,
+                action_path=action_path,
                 elements_found=len(elements),
             )
 
@@ -411,43 +423,33 @@ class SiteExplorer:
                 )
 
                 # 发现新状态 → 判断是否入队
-                if new_hash not in self._visited and outcome in ("page_changed", "content_changed", "dialog_appeared"):
+                if new_hash not in self._visited and new_hash not in getattr(self, '_queued_hashes', set()) and outcome in ("page_changed", "content_changed", "dialog_appeared"):
+                    if not hasattr(self, '_queued_hashes'):
+                        self._queued_hashes = set()
+                    self._queued_hashes.add(new_hash)
+                    
                     new_url = page.url
                     if self._is_same_origin(new_url):
+                        # 记录行动轨迹
+                        if new_url != url_before:
+                            new_action_path = []
+                        else:
+                            new_action_path = action_path + [{"description": elem.description, "x": elem.css_x, "y": elem.css_y}]
+                            
                         norm = self._normalize_url(new_url)
-                        if norm not in self._queued_urls:
-                            self._queued_urls.add(norm)
-                            self._queue.append((new_url, depth + 1, node_id))
-                            print_agent("site_explorer", f"    ➕ 新页面入队: {new_url[:60]} (depth={depth+1})")
+                        if new_url != url_before:
+                            if norm not in self._queued_urls:
+                                self._queued_urls.add(norm)
+                                self._queue.append((new_url, depth + 1, node_id, new_action_path))
+                                print_agent("site_explorer", f"    ➕ 新页面入队: {new_url[:60]} (depth={depth+1})")
+                        else:
+                            self._queue.append((new_url, depth + 1, node_id, new_action_path))
+                            print_agent("site_explorer", f"    ➕ 页面新状态入队: {new_url[:60]} (depth={depth+1})")
 
                 edge.to_node = new_url if url_after != url_before else ""
                 self._edges.append(edge)
 
-                # 若点击后页面未跳转但内容变化（展开菜单/下拉）→ 立即补扫新元素
-                if outcome == "content_changed" and url_after == url_before:
-                    original_descs = {e.description for e in elements_sorted}
-                    expanded = await self._scan_expanded_elements(page, original_descs)
-                    if expanded:
-                        print_agent(
-                            "site_explorer",
-                            f"    🌿 展开后发现 {len(expanded)} 个新元素，立即探索"
-                        )
-                        for exp_elem in expanded[:5]:  # 最多继续探索5个展开项
-                            snap2 = await self._snapshot(page)
-                            url2 = page.url
-                            fresh_ss = await self.vision._screenshot(page, f"exp_{node_id}_{int(time.time())}")
-                            ok2 = await self._click_element(page, exp_elem, fresh_ss)
-                            if ok2:
-                                await VisionEngine._wait_stable(page)
-                                new_url2 = page.url
-                                if new_url2 != url2 and self._is_same_origin(new_url2):
-                                    norm2 = self._normalize_url(new_url2)
-                                    if norm2 not in self._queued_urls:
-                                        self._queued_urls.add(norm2)
-                                        self._queue.append((new_url2, depth + 1, node_id))
-                                        print_agent("site_explorer", f"      ➕ 子菜单页面入队: {new_url2[:55]}")
-                                node.elements_explored += 1
-                            await self._restore(page, snap2)
+                # 用户要求：点击或操作一次就回退一次，先把首层页面探索完，不再立即递归探索展开项
 
                 # 回退到点击前
 
@@ -966,6 +968,7 @@ class SiteExplorer:
         data = {
             "visited_hashes": list(self._visited),
             "queued_urls": list(self._queued_urls),
+            "queued_hashes": list(getattr(self, '_queued_hashes', set())),
             "nodes": [n.to_dict() for n in self._nodes.values()],
             "edges": [e.to_dict() for e in self._edges],
             "stats": {
@@ -982,11 +985,13 @@ class SiteExplorer:
         data = json.loads(Path(path).read_text())
         self._visited = set(data.get("visited_hashes", []))
         self._queued_urls = set(data.get("queued_urls", []))
+        self._queued_hashes = set(data.get("queued_hashes", []))
         for n in data.get("nodes", []):
             node = SiteNode(
                 node_id=n["node_id"], url=n["url"], url_path=n.get("url_path", ""),
                 title=n["title"], depth=n["depth"], state_hash=n["state_hash"],
-                screenshot=n.get("screenshot", ""), elements=n.get("elements", []),
+                screenshot=n.get("screenshot", ""), action_path=n.get("action_path", []),
+                elements=n.get("elements", []),
                 elements_found=n.get("elements_found", 0),
                 elements_explored=n.get("elements_explored", 0),
             )
@@ -998,7 +1003,7 @@ class SiteExplorer:
         # 恢复队列（之前入队但未访问的 URL）
         for url in self._queued_urls:
             if not any(url == self._normalize_url(n.url) for n in self._nodes.values()):
-                self._queue.append((url, 0, ""))
+                self._queue.append((url, 0, "", []))
 
     # ── 报告生成 ─────────────────────────────────────────
 
