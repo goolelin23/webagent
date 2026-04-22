@@ -88,16 +88,26 @@ class PromptEngine:
         page_skills: str = "",
         workflows: str = "",
     ) -> str:
-        """构建规划任务提示词（含深度分析上下文）"""
+        """构建规划任务提示词 — 极简版，跳过所有空白段落"""
+        # 只拼接有内容的段落，避免发一大堆"（暂无XXX）"浪费 Token
+        extra_parts = []
+        if system_info:
+            extra_parts.append(f"## 系统信息\n{system_info}")
+        if knowledge_context and "暂无" not in knowledge_context and "暂未" not in knowledge_context:
+            extra_parts.append(f"## 知识库\n{knowledge_context}")
+        if page_skills and "暂无" not in page_skills and "未扫描" not in page_skills:
+            extra_parts.append(f"## 已学技能\n{page_skills}")
+        if workflows and "暂无" not in workflows and "未扫描" not in workflows:
+            extra_parts.append(f"## 业务流程\n{workflows}")
+
         business_context = self.context_manager.get_prompt_context()
+        if business_context:
+            extra_parts.append(f"## 业务上下文\n{business_context}")
+
         return PLANNER_TASK_TEMPLATE.format(
             user_instruction=user_instruction,
-            system_info=system_info or "（暂无系统页面信息）",
-            knowledge_context=knowledge_context or "（暂无知识库信息，请根据通用Web操作经验规划）",
-            business_context=business_context or "",
-            available_skills=available_skills or "（无额外计算技能插件）",
-            page_skills=page_skills or "（未扫描，暂无页面技能。请根据通用操作经验规划）",
-            workflows=workflows or "（未扫描，暂无业务流程）",
+            system_info=f"## 目标系统\n{system_info}" if system_info else "",
+            extra_context="\n\n".join(extra_parts) if extra_parts else "",
         )
 
     def build_planner_task_with_deep_context(
@@ -108,29 +118,20 @@ class PromptEngine:
         available_skills: str = "",
         deep_context: dict | None = None,
     ) -> str:
-        """
-        构建规划任务提示词（自动注入深度分析上下文）
-
-        Args:
-            deep_context: 从 KnowledgeStore.get_deep_context() 获取的上下文字典
-        """
-        page_skills = "（未扫描，暂无页面技能）"
-        workflows = "（未扫描，暂无业务流程）"
+        """构建规划任务提示词（自动注入深度分析上下文）"""
+        page_skills = ""
+        workflows = ""
 
         if deep_context and deep_context.get("analyzed"):
-            page_skills = deep_context.get("page_skills_prompt", "（暂无）")
-            workflows = deep_context.get("workflows_prompt", "（暂无）")
+            page_skills = deep_context.get("page_skills_prompt", "")
+            workflows = deep_context.get("workflows_prompt", "")
 
-            # 补充系统描述到 system_info
             sys_desc = deep_context.get("system_description", "")
             entities = deep_context.get("business_entities", [])
-            if sys_desc or entities:
-                extra = ""
-                if sys_desc:
-                    extra += f"\n系统描述: {sys_desc}"
-                if entities:
-                    extra += f"\n业务实体: {', '.join(entities)}"
-                system_info = (system_info or "") + extra
+            if sys_desc:
+                system_info = (system_info or "") + f"\n系统: {sys_desc}"
+            if entities:
+                system_info = (system_info or "") + f"\n实体: {', '.join(entities)}"
 
         return self.build_planner_task(
             user_instruction=user_instruction,

@@ -40,50 +40,36 @@ class PlannerAgent:
         target_url: str = "",
     ) -> ExecutionPlan:
         """
-        为用户指令生成执行计划
-
-        Args:
-            instruction: 用户自然语言指令
-            target_url: 目标系统URL（可选）
-        Returns:
-            ExecutionPlan 执行计划
+        为用户指令生成执行计划 — 极速精简版
         """
         print_agent("planner", f"接收指令: {instruction}")
 
-        # 1. 获取知识库上下文
-        knowledge_context = self._get_knowledge_context(target_url)
-
-        # 2. 获取系统信息
+        # 1. 获取系统信息（极轻量）
         system_info = self._get_system_info(target_url)
 
-        # 3. 获取可用技能列表
-        available_skills = self.skill_manager.get_skills_prompt()
+        # 2. 仅在有已扫描知识库时才加载上下文（避免拼一堆空段落）
+        knowledge_context = ""
+        deep_context = None
+        if target_url:
+            knowledge_context = self._get_knowledge_context(target_url)
+            deep_context = self._get_deep_context(target_url)
 
-        # 4. 获取深度分析上下文（页面技能 + 工作流）
-        deep_context = self._get_deep_context(target_url)
-
-        # 5. 检查是否有匹配的工作流
-        matched_wf = self._match_workflow(instruction, target_url)
-        if matched_wf:
-            print_agent("planner", f"🎯 匹配到业务流程: {matched_wf.name}")
-            print_agent("planner", f"   技能序列: {' → '.join(matched_wf.skill_sequence)}")
-
-        # 6. 构建规划提示词
+        # 3. 构建极简规划提示词
         task_prompt = self.prompt_engine.build_planner_task_with_deep_context(
             user_instruction=instruction,
             system_info=system_info,
             knowledge_context=knowledge_context,
-            available_skills=available_skills,
+            available_skills="",  # 技能插件列表跳过，节省 token
             deep_context=deep_context,
         )
 
         system_prompt = self.prompt_engine.get_planner_system_prompt()
 
-        # 7. 调用 LLM 生成计划
+        # 4. 调用 LLM 生成计划（限制输出 Token 防止冗长）
         print_agent("planner", "正在分析和规划...")
         response = await self._call_llm(system_prompt, task_prompt)
 
-        # 8. 解析 LLM 返回的计划
+        # 5. 解析 LLM 返回的计划
         plan = self._parse_plan_response(response, instruction)
 
         print_agent("planner", f"生成执行计划: {len(plan.steps)} 个步骤")
@@ -103,25 +89,15 @@ class PlannerAgent:
         error_message: str,
         current_state: dict,
     ) -> ExecutionPlan:
-        """
-        执行失败后重新规划
-
-        Args:
-            original_plan: 原始计划
-            completed_steps: 已完成的步骤
-            failed_step: 失败的步骤
-            error_message: 错误信息
-            current_state: 当前页面状态
-        """
+        """执行失败后重新规划"""
         print_agent("planner", f"重新规划: 步骤{failed_step.step_id}失败 — {error_message}")
 
-        # 构建重新规划提示词
         completed_str = "\n".join([
             f"  ✅ 步骤{s.step_id}: {s.description}"
             for s in completed_steps
-        ]) or "（暂无已完成步骤）"
+        ]) or "（无）"
 
-        failed_str = f"  ❌ 步骤{failed_step.step_id}: {failed_step.description} ({failed_step.action} → {failed_step.target})"
+        failed_str = f"  ❌ 步骤{failed_step.step_id}: {failed_step.description}"
 
         state_str = json.dumps(current_state, ensure_ascii=False, indent=2)
 
@@ -142,7 +118,8 @@ class PlannerAgent:
         return new_plan
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """调用 LLM 并流式输出缓解本地模型的等待焦虑"""
+        """调用 LLM — 限制输出长度 + 流式 + 超时"""
+        import asyncio
         try:
             from langchain_core.messages import SystemMessage, HumanMessage
             from webagent.utils.logger import console
@@ -152,14 +129,39 @@ class PlannerAgent:
                 HumanMessage(content=user_prompt),
             ]
             
-            console.print("  [dim cyan]分析过程思考中...[/dim cyan]")
+            # 强制限制规划器的输出 Token 上限，防止本地模型冗长输出
+            # 规划器只需要输出一个 JSON，1024 tokens 足够了
+            original_max_tokens = getattr(self.llm, 'max_tokens', None)
+            try:
+                self.llm.max_tokens = 1024
+            except Exception:
+                pass  # 部分只读属性，忽略
+
+            console.print("  [dim cyan]规划思考中...[/dim cyan]")
             final_content = ""
-            async for chunk in self.llm.astream(lc_messages):
-                if chunk.content:
-                    final_content += chunk.content
-                    # 使用原生 print 强制刷新缓冲区，避免 rich 组件吞掉流式小块
-                    print(chunk.content, end="", flush=True)
+            
+            async def _stream():
+                nonlocal final_content
+                async for chunk in self.llm.astream(lc_messages):
+                    if chunk.content:
+                        final_content += chunk.content
+                        print(chunk.content, end="", flush=True)
+            
+            # 60 秒硬超时，防止本地模型无限推理
+            try:
+                await asyncio.wait_for(_stream(), timeout=120.0)
+            except asyncio.TimeoutError:
+                print("\n⏰ 规划超时(120s)，使用已生成内容", flush=True)
+            
             print("\n", flush=True)
+            
+            # 恢复原始 max_tokens
+            if original_max_tokens is not None:
+                try:
+                    self.llm.max_tokens = original_max_tokens
+                except Exception:
+                    pass
+            
             return final_content
 
         except Exception as e:
