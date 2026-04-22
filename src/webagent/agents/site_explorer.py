@@ -753,12 +753,21 @@ class SiteExplorer:
     # ── 点击执行 ──────────────────────────────────────────
 
     async def _click_element(self, page: Page, elem: DiscoveredElement, screenshot_path: str) -> bool:
-        """带二阶视觉精修（Zoom-In Refinement）的元素点击"""
+        """
+        带验证重试的元素点击（针对 nav/sidebar 导航栏强化）
+
+        策略:
+          1. 对 nav/sidebar/toolbar 区域的元素，先 hover 再 click（很多导航菜单需要 hover 激活）
+          2. 点击后验证是否生效（URL 或 DOM hash 是否变化）
+          3. 如果第一次没生效 → 最多重试 2 次，每次使用不同的降级策略:
+             - 重试1: 直接用 selector 精确点击（绕过坐标）
+             - 重试2: 坐标微偏移 + 双击兜底
+        """
         from webagent.agents.vision_engine import VisionAction
         try:
             x, y = elem.css_x, elem.css_y
 
-            # 无论如何都先跑二阶精修：对于从 DOM 拿到但描述不清的元素，VLM 能在局部高清图中重新认出它
+            # 二阶精修
             rx, ry, zoom_conf = await self.vision._zoom_refine_coords(
                 page, x, y, elem.description, zoom_radius=180
             )
@@ -767,15 +776,118 @@ class SiteExplorer:
 
             # DOM 吸附
             fx, fy, sel, _ = await self.vision._refine_coordinates(page, x, y, elem.description)
+            final_selector = elem.selector_hint or sel
 
+            # 判断是否属于高风险区域（nav/sidebar/toolbar 元素小而密集，容易点偏）
+            is_nav_region = elem.region_name in ("nav", "sidebar", "toolbar", "breadcrumb")
+
+            # ── 策略1: hover-before-click（nav 区域专属） ──
+            # 很多导航菜单第一次点击只触发 hover 态（如 dropdown），需要先 hover 激活再点击
+            if is_nav_region:
+                try:
+                    await page.mouse.move(fx, fy)
+                    await asyncio.sleep(0.25)  # 等待 hover 态动画/展开
+                except Exception:
+                    pass
+
+            # 记录点击前的状态用于验证
+            url_before = page.url
+            hash_before = await self._compute_hash(page)
+
+            # ── 首次点击 ──
             action = VisionAction(
                 action_type="click",
                 target_description=elem.description,
                 coordinates={"x": fx, "y": fy},
                 element_id=elem.elem_id,
-                selector_hint=elem.selector_hint or sel,
+                selector_hint=final_selector,
             )
-            return await self.vision.execute_vision_action(page, action)
+            click_ok = await self.vision.execute_vision_action(page, action)
+            if not click_ok:
+                return False
+
+            await VisionEngine._wait_stable(page)
+
+            # ── 验证点击是否生效 ──
+            url_after = page.url
+            hash_after = await self._compute_hash(page)
+            click_had_effect = (url_after != url_before) or (hash_after != hash_before)
+
+            if click_had_effect:
+                return True  # 首次点击就生效了
+
+            # ── 对 nav 区域执行智能重试（最多 2 次） ──
+            if not is_nav_region:
+                return True  # 非导航区域不做重试，避免误操作
+
+            max_retries = 2
+            for retry in range(max_retries):
+                retry_strategy = ""
+
+                if retry == 0 and final_selector:
+                    # ── 重试1: selector 精确点击（绕过坐标精度问题） ──
+                    retry_strategy = "selector直接点击"
+                    try:
+                        locator = page.locator(final_selector)
+                        if await locator.count() > 0:
+                            await locator.first.hover(timeout=2000)
+                            await asyncio.sleep(0.2)
+                            await locator.first.click(timeout=3000)
+                            await VisionEngine._wait_stable(page)
+                        else:
+                            continue
+                    except Exception:
+                        continue
+
+                elif retry == 0 and not final_selector:
+                    # ── 重试1(无selector): hover + 再次坐标点击 ──
+                    retry_strategy = "hover+重新点击"
+                    try:
+                        await page.mouse.move(fx, fy)
+                        await asyncio.sleep(0.3)
+                        await page.mouse.click(fx, fy)
+                        await VisionEngine._wait_stable(page)
+                    except Exception:
+                        continue
+
+                elif retry == 1:
+                    # ── 重试2: 坐标微偏移(±3px扫射) + 尝试描述文本匹配 ──
+                    retry_strategy = "文本匹配+偏移扫射"
+                    clicked = False
+                    # 先尝试通过文本内容匹配元素
+                    if elem.description:
+                        try:
+                            desc_text = elem.description.strip()[:20]
+                            # 尝试通过可见文本精确匹配
+                            text_locator = page.get_by_text(desc_text, exact=False)
+                            if await text_locator.count() > 0:
+                                await text_locator.first.click(timeout=3000)
+                                await VisionEngine._wait_stable(page)
+                                clicked = True
+                        except Exception:
+                            pass
+                    # 文本匹配失败则做偏移扫射
+                    if not clicked:
+                        try:
+                            for dx, dy in [(0, -3), (0, 3), (-3, 0), (3, 0)]:
+                                await page.mouse.click(fx + dx, fy + dy)
+                                await asyncio.sleep(0.15)
+                            await VisionEngine._wait_stable(page)
+                        except Exception:
+                            continue
+
+                # 验证重试结果
+                hash_now = await self._compute_hash(page)
+                url_now = page.url
+                if url_now != url_before or hash_now != hash_before:
+                    logger.debug(f"    🔄 nav 重试({retry_strategy})成功, 第{retry+2}次点击生效")
+                    return True
+                logger.debug(f"    🔄 nav 重试({retry_strategy})未生效, 继续降级...")
+
+            # 所有重试均未生效，仍返回 True（点击本身成功了，只是页面没变化，可能本就是当前页面）
+            logger.debug(f"    ⚠️ nav 元素 '{elem.description[:25]}' 点击{max_retries+1}次均无变化")
+            return True
+
         except Exception as e:
             logger.debug(f"点击异常: {e}")
             return False
@@ -844,35 +956,166 @@ class SiteExplorer:
     # ── 快照 / 回退 ───────────────────────────────────────
 
     async def _snapshot(self, page: Page) -> dict:
+        """记录当前完整页面状态快照，用于后续精确回退"""
+        # 检测当前是否存在打开的弹窗/对话框/抽屉
+        has_dialog = False
+        try:
+            has_dialog = await page.evaluate("""
+                () => {
+                    // 检测常见框架的 Modal/Dialog/Drawer 打开状态
+                    const modalSelectors = [
+                        '[role="dialog"]:not([hidden])',
+                        '[role="alertdialog"]:not([hidden])',
+                        '.el-dialog__wrapper:not([style*="display: none"])',   // ElementUI
+                        '.ant-modal-wrap:not(.ant-modal-wrap-hidden)',          // Ant Design
+                        '.v-dialog--active',                                   // Vuetify
+                        '.modal.show',                                         // Bootstrap
+                        '[class*="drawer"][class*="open"]',
+                        '[class*="modal"][class*="open"]',
+                    ];
+                    return modalSelectors.some(sel => document.querySelector(sel) !== null);
+                }
+            """)
+        except Exception:
+            pass
+
+        # 记录历史栈长度，用于判断 go_back 是否可用
+        history_len = 0
+        try:
+            history_len = await page.evaluate("window.history.length")
+        except Exception:
+            pass
+
         return {
             "url": page.url,
             "sx": await page.evaluate("window.scrollX"),
             "sy": await page.evaluate("window.scrollY"),
             "hash": await self._compute_hash(page),
+            "has_dialog": has_dialog,
+            "history_len": history_len,
         }
 
     async def _restore(self, page: Page, snapshot: dict):
-        target = snapshot["url"]
-        if page.url != target:
+        """
+        多级回退策略（六层降级，按速度从快到慢）
+
+        策略优先级:
+          L1  Escape键         — 最快，专门关闭弹窗/对话框/抽屉（URL不变的DOM突变）
+          L2  page.go_back()  — 快，浏览器原生历史栈后退（URL改变的跳转）
+          L3  history.back()  — JS 层 go_back，绕过 Playwright 包装，作为 L2 的补充
+          L4  page.reload()   — 中速，SPA 状态污染时强制刷新回初始状态
+          L5  page.goto(url)  — 慢，URL 不同但 go_back 系列均失败时精确导航
+          L6  放弃            — 所有策略均失败时记录警告，继续探索
+
+        每层策略执行后，用 state_hash 验证是否已成功恢复，
+        验证通过则立即停止降级，避免不必要的慢操作。
+        """
+        target_url = snapshot["url"]
+        target_hash = snapshot.get("hash", "")
+
+        async def _hash_matches() -> bool:
+            """验证当前状态是否与快照一致"""
+            if not target_hash:
+                return page.url == target_url
+            return (await self._compute_hash(page)) == target_hash
+
+        # ── L1: Escape键 — 专门处理「URL 没变，弹窗/抽屉被打开」的情况 ──
+        # 适合：Modal、Drawer、Dropdown、Tooltip 等覆盖层
+        if snapshot.get("has_dialog") is False and page.url == target_url:
+            # 快速检测：当前是否冒出了新弹窗（快照中没有但现在有）
             try:
-                await page.goto(target, wait_until="domcontentloaded", timeout=12000)
-                await VisionEngine._wait_stable(page)
+                now_has_dialog = await page.evaluate("""
+                    () => {
+                        const modalSelectors = [
+                            '[role="dialog"]:not([hidden])',
+                            '[role="alertdialog"]:not([hidden])',
+                            '.el-dialog__wrapper:not([style*="display: none"])',
+                            '.ant-modal-wrap:not(.ant-modal-wrap-hidden)',
+                            '.v-dialog--active',
+                            '.modal.show',
+                        ];
+                        return modalSelectors.some(sel => document.querySelector(sel) !== null);
+                    }
+                """)
+                if now_has_dialog:
+                    await page.keyboard.press("Escape")
+                    await VisionEngine._wait_stable(page)
+                    logger.debug("  ⌨️  L1: Escape 关闭弹窗")
+                    if await _hash_matches():
+                        logger.debug("  ✅ L1 Escape 回退成功")
+                        await self._restore_scroll(page, snapshot)
+                        return
             except Exception as e:
-                logger.warning(f"回退失败: {e}")
-                return
-        else:
-            # 强化检查：即使 URL 没变，如果 DOM 变了也要重载 (防御 SPA 污染)
+                logger.debug(f"  L1 Escape 检测失败: {e}")
+
+        # ── L2: page.go_back() — URL 发生变化时的首选快速回退 ──
+        # 依赖浏览器 History 栈，支持 BFCache 瞬间恢复，无需重新渲染
+        if page.url != target_url and snapshot.get("history_len", 0) > 1:
+            try:
+                result = await page.go_back(wait_until="domcontentloaded", timeout=6000)
+                if result is not None:  # go_back 成功返回 Response（导航成功）
+                    await VisionEngine._wait_stable(page)
+                    logger.debug("  🔙 L2: go_back() 执行完成")
+                    if await _hash_matches():
+                        logger.debug("  ✅ L2 go_back 回退成功")
+                        await self._restore_scroll(page, snapshot)
+                        return
+            except Exception as e:
+                logger.debug(f"  L2 go_back 失败: {e}")
+
+        # ── L3: history.back() — JS 层 go_back，绕过 Playwright 网络层包装 ──
+        # 适合：SPA 自己管理 History 但 Playwright go_back 无法捕获的情况
+        if page.url != target_url:
+            try:
+                await page.evaluate("window.history.back()")
+                await VisionEngine._wait_stable(page)
+                logger.debug("  🔙 L3: history.back() 执行完成")
+                if await _hash_matches():
+                    logger.debug("  ✅ L3 history.back 回退成功")
+                    await self._restore_scroll(page, snapshot)
+                    return
+            except Exception as e:
+                logger.debug(f"  L3 history.back 失败: {e}")
+
+        # ── L4: page.reload() — URL 未变但 DOM 状态被污染（SPA 内部状态机混乱）──
+        # 适合：展开了侧边栏子菜单但无 URL 变化，VLM 判断 content_changed 的场景
+        if page.url == target_url:
             current_hash = await self._compute_hash(page)
-            if current_hash != snapshot.get("hash"):
+            if current_hash != target_hash:
                 try:
                     await page.reload(wait_until="domcontentloaded", timeout=12000)
                     await VisionEngine._wait_stable(page)
-                    logger.debug("  🔄 触发强制重载, 清理 SPA DOM 突变状态")
+                    logger.debug("  🔄 L4: reload() 清理 SPA DOM 污染")
+                    if await _hash_matches():
+                        logger.debug("  ✅ L4 reload 回退成功")
+                        await self._restore_scroll(page, snapshot)
+                        return
                 except Exception as e:
-                    pass
+                    logger.debug(f"  L4 reload 失败: {e}")
 
+        # ── L5: page.goto(url) — 终极保底，精确导航到目标 URL ──
+        # 最慢但最可靠，用于 go_back 系列全部失败后的兜底
+        if page.url != target_url or not await _hash_matches():
+            try:
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
+                await VisionEngine._wait_stable(page)
+                logger.debug(f"  🌐 L5: goto({target_url[:60]}) 精确导航")
+                if await _hash_matches():
+                    logger.debug("  ✅ L5 goto 回退成功")
+                else:
+                    logger.debug("  ⚠️  L5 goto 后 hash 仍不匹配（页面动态内容，可接受）")
+                await self._restore_scroll(page, snapshot)
+                return
+            except Exception as e:
+                logger.warning(f"  ❌ L5 goto 回退失败: {e}")
+
+        # ── L6: 放弃（所有策略均失败）──
+        logger.warning(f"  ⚠️  所有回退策略均失败，当前 URL={page.url[:60]}，继续探索")
+
+    async def _restore_scroll(self, page: Page, snapshot: dict):
+        """恢复滚动位置（回退后的收尾步骤）"""
         try:
-            await page.evaluate(f"window.scrollTo({snapshot['sx']}, {snapshot['sy']})")
+            await page.evaluate(f"window.scrollTo({snapshot.get('sx', 0)}, {snapshot.get('sy', 0)})")
         except Exception:
             pass
         await asyncio.sleep(0.1)
