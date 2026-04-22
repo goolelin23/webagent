@@ -69,7 +69,8 @@ class AgentOrchestrator:
         """
         执行完整的自动化任务流程
 
-        流程: 用户指令 → [可选扫描] → 规划 → 执行 → [可能重新规划]
+        流程: 用户指令 → [可选扫描] → 规划 → 执行 → [验证] → [继续交互]
+        任务完成后浏览器保持打开，用户可继续输入新指令操作，输入 /done 关闭浏览器。
 
         Args:
             instruction: 用户自然语言指令
@@ -103,8 +104,14 @@ class AgentOrchestrator:
             report = await self._execute_with_replan(plan)
             console.print()
 
+            # Step 4: 验证最终结果
+            await self._verify_task_result(report)
+
             # 输出最终报告
             self._print_final_report(report)
+
+            # Step 5: 浏览器保持打开，进入继续交互模式
+            await self._interactive_continuation(target_url)
 
             return report
 
@@ -313,6 +320,129 @@ class AgentOrchestrator:
                 return report
 
         return report
+
+    async def _verify_task_result(self, report: ExecutionReport):
+        """
+        验证最终任务执行结果 — 通过截图 + 视觉模型确认最后一步是否真正成功
+        """
+        if not report.results:
+            return
+
+        last_result = report.results[-1]
+        page = self.executor.page
+        if not page:
+            return
+
+        console.print("[bold]🔍 阶段四: 结果验证[/bold]")
+
+        try:
+            from webagent.agents.vision_engine import VisionEngine
+
+            vision = VisionEngine()
+            screenshot_path = await vision._screenshot(page, "verify", draw_som=False)
+
+            # 用视觉模型验证最后的页面状态是否符合预期
+            last_step_desc = last_result.step.description
+            task_desc = report.plan.task
+
+            verify_prompt = (
+                f"请仔细观察当前截图，判断以下操作是否已成功完成：\n"
+                f"- 任务目标: {task_desc}\n"
+                f"- 最后一步操作: {last_step_desc}\n\n"
+                f"请用 JSON 格式回复:\n"
+                f'{{"success": true/false, "evidence": "你观察到的证据", "suggestion": "如果失败，你的建议"}}'
+            )
+
+            response = await vision._call_vision_llm(verify_prompt, [screenshot_path])
+            data = vision._extract_json(response)
+
+            if data:
+                verified = data.get("success", False)
+                evidence = data.get("evidence", "")
+                suggestion = data.get("suggestion", "")
+
+                if verified:
+                    console.print(f"  [bold green]✅ 视觉验证通过[/bold green]")
+                    console.print(f"  [dim]证据: {evidence}[/dim]")
+                    # 修正报告状态（如果管线报告了失败但视觉确认成功）
+                    if not report.success:
+                        console.print(f"  [yellow]⚠️ 管线报告失败但视觉验证成功，已修正结果[/yellow]")
+                        report.success = True
+                else:
+                    console.print(f"  [bold yellow]⚠️ 视觉验证未通过[/bold yellow]")
+                    console.print(f"  [dim]证据: {evidence}[/dim]")
+                    if suggestion:
+                        console.print(f"  [dim]建议: {suggestion}[/dim]")
+                    # 如果管线报告成功但视觉验证失败，标记警告但不修改结果
+                    if report.success:
+                        console.print(f"  [yellow]⚠️ 管线报告成功但视觉验证存疑，请人工确认[/yellow]")
+            else:
+                console.print(f"  [dim]视觉验证返回解析失败，跳过验证[/dim]")
+
+        except Exception as e:
+            logger.warning(f"视觉验证异常（不影响结果）: {e}")
+            console.print(f"  [dim]视觉验证跳过: {e}[/dim]")
+
+        console.print()
+
+    async def _interactive_continuation(self, target_url: str = ""):
+        """
+        任务完成后保持浏览器打开，允许用户继续输入指令操作
+        输入 /done 关闭浏览器返回主交互循环
+        """
+        from rich.prompt import Prompt
+
+        console.print(f"[bold cyan]{'─'*60}[/bold cyan]")
+        console.print("[bold cyan]  🌐 浏览器保持打开，您可以继续输入指令操作当前页面[/bold cyan]")
+        console.print("[dim]  输入新的自然语言指令继续操作，或输入 /done 关闭浏览器返回[/dim]")
+        console.print(f"[bold cyan]{'─'*60}[/bold cyan]")
+        console.print()
+
+        while True:
+            try:
+                user_input = Prompt.ask("[bold magenta]🔄 继续操作[/bold magenta]").strip()
+
+                if not user_input:
+                    continue
+
+                if user_input.lower() in ("/done", "/quit", "/exit", "/close"):
+                    console.print("  [dim]正在关闭浏览器...[/dim]")
+                    break
+
+                # 在当前已打开的页面上继续执行新指令
+                page = self.executor.page
+                if not page:
+                    console.print("  [bold red]浏览器页面已丢失，无法继续操作[/bold red]")
+                    break
+
+                # 获取当前页面 URL 作为目标
+                current_url = page.url or target_url
+
+                console.print(f"\n[bold]📋 规划新任务...[/bold]")
+                plan = await self.planner.plan(user_input, current_url)
+                console.print()
+
+                console.print(f"[bold]⚡ 执行新任务...[/bold]")
+                report = await self._execute_with_replan(plan)
+                console.print()
+
+                # 验证新任务结果
+                await self._verify_task_result(report)
+
+                # 打印简要报告
+                if report.success:
+                    console.print(f"[bold green]  ✅ 操作完成 — {report.completed_steps}/{report.total_steps} 步成功[/bold green]")
+                else:
+                    console.print(f"[bold red]  ❌ 操作未完成 — {report.completed_steps}/{report.total_steps} 步[/bold red]")
+                    if report.error_message:
+                        console.print(f"  [dim]错误: {report.error_message}[/dim]")
+                console.print()
+
+            except KeyboardInterrupt:
+                console.print("\n  [dim]输入 /done 关闭浏览器返回[/dim]")
+            except Exception as e:
+                console.print(f"  [bold red]操作异常: {e}[/bold red]")
+                logger.error(f"继续操作异常: {e}")
 
     def set_business_domain(self, domain: str):
         """设置业务领域"""

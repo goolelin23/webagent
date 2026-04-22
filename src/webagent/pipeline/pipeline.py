@@ -45,12 +45,14 @@ class ActionPipeline:
     ):
         self.page = page
         self.validator = StateValidator(page)
-        self.retry_manager = RetryManager()
+        # 策略: 选择器操作仅尝试一次，失败直接降级到视觉引擎，不做重试
+        from webagent.pipeline.retry_manager import RetryPolicy
+        self.retry_manager = RetryManager(policy=RetryPolicy(max_retries=1))
         self.safety_classifier = safety_classifier
         self.skill_manager = skill_manager
         self._action_log: list[ActionResult] = []
 
-        # 注册恢复操作
+        # 注册恢复操作（保留以备特殊场景手动调用）
         self.retry_manager.register_recovery("dismiss_modal", self._recovery_dismiss_modal)
         self.retry_manager.register_recovery("refresh", self._recovery_refresh)
         self.retry_manager.register_recovery("scroll_and_retry", self._recovery_scroll)
@@ -124,7 +126,7 @@ class ActionPipeline:
         # ── 5. 视觉降级 (Vision Fallback) ──
         vision_failed = False
         if not retry_result.success and step.action in ["click", "fill", "select", "check", "scroll", "type"]:
-            logger.warning("选择器操作彻底失败，正在尝试视觉智能降级定位...")
+            logger.warning("选择器操作失败，跳过重试，直接降级到视觉引擎定位...")
             try:
                 # 只在重试彻底失败的最后时刻调用一回大模型视觉定位
                 vision_success = await self._execute_vision_action(step)
